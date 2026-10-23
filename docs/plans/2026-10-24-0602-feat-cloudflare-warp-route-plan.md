@@ -79,7 +79,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 
 - R26. While a WARP profile is the selected exit node, it contributes one resolver address as the root `.` DNS route, and lookups on that route dial through the same profile. The address defaults to `1.1.1.1`, `tailmix warp register --dns <address>` overrides it, and it is stored with the profile.
 - R27. A MagicDNS suffix from any tailnet still wins over the WARP root route by longest suffix.
-- R28. Unselecting WARP removes its DNS route, a WARP profile that is not the exit node contributes no DNS route, and a selected WARP profile that is not connected contributes none either.
+- R28. Unselecting WARP removes its DNS route. A WARP profile that is not the exit node contributes no DNS route. A selected WARP profile that is not connected keeps its route and answers SERVFAIL there, so a lookup never falls through to a resolver outside the tunnel.
 
 **CLI and status**
 
@@ -104,7 +104,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 
 - **WARP behaves as a peerless exit node.** It advertises a full-tunnel default and reuses the existing default-route, longest-prefix, and exit-node-selection rules, so route policy gains no new class. Governs R20, R21, R22, R23, R24, R31. (session-settled: user-directed — chosen over a new route class: no new policy surface to learn or fail closed on)
 - **Support both registration and config import.** The Cloudflare registration API is called directly, and a usque `config.json` can be imported when one already exists. Governs R2, R3, R4, R7. (session-settled: user-directed — chosen over registration only: nobody must keep usque installed to migrate)
-- **WARP DNS behaves as an exit profile's DNS.** The root `.` route appears only while WARP is the selected exit node, its resolver is a stored address dialed through the tunnel, and tailnet suffixes keep priority by longest match. Governs R26, R27, R28. (session-settled: user-directed)
+- **WARP DNS behaves as an exit profile's DNS.** The root `.` route appears whenever WARP is the selected exit node, its resolver is a stored address dialed through the tunnel, and while the tunnel is down that route answers SERVFAIL rather than falling through. Governs R26, R27, R28. (session-settled: user-directed — chosen over withdrawing the route during an outage: a withdrawn route leaks every lookup to the physical resolver.)
 - **Linux only for this change.** The engine, the state-file tolerance, and the error path are scoped to Linux and to failing loudly elsewhere. Governs R35, R36. (session-settled: user-directed — chosen over macOS parity now: it splits the test surface)
 - **Fork usque rather than consume its `api` package.** Upstream `MaintainTunnel` returns nothing and reports connect state only through executable-path hooks, so a status channel and Go callbacks are unavoidable. Governs R12, R14, R15, R37, R38, R39. (session-settled: user-directed — chosen over shelling out to the usque binary: status, reconnect, and privacy control stay inside the daemon)
 
@@ -401,7 +401,7 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U5 and U7 gate U6. U8 follow
 
 **Files.** `profile/warpdns.go`, `profile/warpdns_test.go`, `profile/warpengine.go`.
 
-**Approach.** Implement `dns.ProfileDNSQueryer` on the engine, with `QueryDNS` building the query for the stored resolver, injecting it on egress, and awaiting the matching reply; also implement the optional context-aware variant so the forwarder can cancel. Inside it, allocate a fresh random source port and rewrite the transaction ID for each tunnel-side exchange, keep the pending map keyed on that rewritten tuple, and restore the client's ID on the reply. Match ingress on source address, source port, and transaction ID before falling through to the channel. Bound the wait by the existing forwarder timeout and discard a stale exchange. Leave the root `.` route to the exit-profile rule that already produces it.
+**Approach.** Implement `dns.ProfileDNSQueryer` on the engine, with `QueryDNS` building the query for the stored resolver, injecting it on egress, and awaiting the matching reply; also implement the optional context-aware variant so the forwarder can cancel. Inside it, allocate a fresh random source port and rewrite the transaction ID for each tunnel-side exchange, keep the pending map keyed on that rewritten tuple, and restore the client's ID on the reply. Match ingress on source address, source port, and transaction ID before falling through to the channel. Bound the wait by the existing forwarder timeout and discard a stale exchange. Answer SERVFAIL when the engine has no tunnel, so the forwarder never dials outside it. Leave the root `.` route to the exit-profile rule that already produces it.
 
 **Test scenarios.**
 
@@ -409,6 +409,7 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U5 and U7 gate U6. U8 follow
 - The engine satisfies `dns.ProfileDNSQueryer`, and a `.` route against a `warp` profile configures without an error.
 - A reply from an unrelated address reaches the device, not the pending exchange.
 - Two concurrent queries that share a client transaction ID each receive their own answer, and a timed-out query leaves nothing pending.
+- A query against a profile whose tunnel is down returns SERVFAIL and no packet leaves the host.
 
 **Verification.** `go test ./profile/...`, and on a Linux host a lookup through the WARP exit profile returns an answer from the configured resolver.
 
@@ -435,7 +436,7 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U5 and U7 gate U6. U8 follow
 
 ### U7. Route the WARP default and gate its DNS by connection state
 
-**Goal.** A selected WARP profile owns the default for every family it has an address for, a disconnected one keeps it as a drop, and only a connected one supplies the root resolver.
+**Goal.** A selected WARP profile owns the default for every family it has an address for, and it keeps both the default and the root resolver in every connection state, failing closed while the tunnel is down.
 
 **Requirements.** R20, R21, R22, R25, R27, R28.
 
@@ -443,7 +444,7 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U5 and U7 gate U6. U8 follow
 
 **Files.** `routingpolicy/policy.go`, `routingpolicy/policy_test.go`, `cmd/tailmixd/main.go`.
 
-**Approach.** Make both activation helpers kind-aware: a `warp` selection matches on profile ID, does not compare the registration ID when the engine reports none, and counts as active in any state, so a stopped profile still owns the default. Seed the exit source for a selected `warp` profile from the stored tunnel addresses, so the default survives a cold start and a dropped engine. Let a zero-length advertised route cover an explicit binding only in a family the advertiser has an address in, while the accept-all import path keeps skipping it, and let that binding past the reserved-range overlap check only for kind `warp` at both the policy and the table check. Drop the root `.` automatic route while that profile is not running.
+**Approach.** Make both activation helpers kind-aware: a `warp` selection matches on profile ID, does not compare the registration ID when the engine reports none, and counts as active in any state, so a stopped profile still owns the default. Seed the exit source for a selected `warp` profile from the stored tunnel addresses, so the default survives a cold start and a dropped engine. Let a zero-length advertised route cover an explicit binding only in a family the advertiser has an address in, while the accept-all import path keeps skipping it, and let that binding past the reserved-range overlap check only for kind `warp` at both the policy and the table check. Keep the root `.` automatic route for a selected `warp` profile in every state, and answer SERVFAIL on it while the engine is not running.
 
 **Test scenarios.**
 
@@ -455,7 +456,7 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U5 and U7 gate U6. U8 follow
 - The same advertisement does not become an accept-all import.
 - A disconnected selected WARP profile keeps both defaults with no host route, so packets drop.
 - A stopped selected WARP profile keeps both defaults from its stored addresses.
-- Its `.` route disappears while it is disconnected.
+- Its `.` route stays installed and answers SERVFAIL while it is disconnected.
 
 **Verification.** `go test ./routingpolicy/... ./cmd/tailmixd/...`.
 
