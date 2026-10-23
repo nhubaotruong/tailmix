@@ -18,7 +18,7 @@ execution: code
 
 **Product authority.** `docs/architecture.md` keeps the existing rules: one engine per profile, one shared host TUN, and no active-tailnet switch. This work adds a kind and adds no routing concept.
 
-**Open blockers.** None. The only unresolved input is the usque revision to pin, which planning settles first.
+**Open blockers.** None.
 
 ---
 
@@ -228,7 +228,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 
 ### Dependencies and Assumptions
 
-- The fork base is a pinned usque revision, with `v1.5.0` as the default candidate.
+- The fork base is usque tag `v4.2.1`, commit `6aa03fc97d12848dce34eedbd187fb1077b5d1ea`, which is the latest tagged revision.
 - tailmix already vendors `gvisor` and `tailscale/wireguard-go`, so the fork's device import repoints to those copies without a new module.
 - Cloudflare's MASQUE endpoint is reachable on UDP 443, or on TCP 443 for the HTTP/2 path.
 - Cloudflare's registration API keeps its current shape; a change there affects R2 and R3 only.
@@ -238,7 +238,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 
 **Resolve Before Planning**
 
-- Which usque revision to pin: the `v1.5.0` tag or a later commit. The answer fixes the snapshot commit that R37 requires.
+None.
 
 **Deferred to Planning**
 
