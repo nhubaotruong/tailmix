@@ -14,7 +14,7 @@ execution: code
 
 **Objective.** One host carries traffic to its tailnets and to the internet through Cloudflare WARP at the same time, with one command deciding which path a packet takes and one view reporting whether each path is up.
 
-**Means.** A fourth profile kind built on a forked usque.
+**Means.** A third profile kind built on a forked usque.
 
 **Product authority.** `docs/architecture.md` keeps the existing rules: one engine per profile, one shared host TUN, and no active-tailnet switch. This work adds a kind and adds no routing concept.
 
@@ -37,15 +37,15 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 **Profile kind**
 
 - R1. WARP is a profile kind named `warp`, stored in `state.json` beside tailscale and wireguard profiles and listed by every command that lists profiles.
-- R2. `tailmix warp register` creates a WARP profile, registers it with Cloudflare, and starts it in one command.
-- R3. `tailmix warp register --jwt <team-token>` enrolls through ZeroTrust instead of a consumer registration.
-- R4. `tailmix warp register --config <path>` creates the profile from a `config.json` written by the usque CLI, without contacting Cloudflare.
+- R2. `tailmix warp register <name>` creates a WARP profile, registers it with Cloudflare, and starts it in one command. The command takes Terms of Service consent on the terminal before the daemon performs the enrollment call, which needs no prompt.
+- R3. `tailmix warp register <name> --jwt-file <path>` enrolls through ZeroTrust instead of a consumer registration, reading the team token from the file so it never appears in the argument list.
+- R4. `tailmix warp register <name> --config <path>` creates the profile from a `config.json` written by the usque CLI, without contacting Cloudflare. The file must carry the MASQUE fields and both tunnel addresses, and the operator stops any other WARP client before the profile starts.
 - R5. A WARP profile is enabled, disabled, renamed, aliased and removed through the existing profile commands, with no WARP-specific variant.
-- R6. Removing a WARP profile deletes its stored credentials and its state directory.
+- R6. Removing a WARP profile follows the existing removal semantics: a plain removal keeps its credentials and state directory, and a purge deletes them. Deleting them does not revoke the Cloudflare registration.
 
 **Credentials**
 
-- R7. A WARP profile stores its private key, registration ID, access token, license, endpoint selection, and the tunnel addresses Cloudflare assigned, inside the profile's own state directory.
+- R7. A WARP profile stores its private key, registration ID, access token, license, the endpoint public key that pins the tunnel handshake, the QUIC and HTTP/2 endpoint addresses for both families, and the tunnel addresses Cloudflare assigned, inside the profile's own state directory.
 - R8. The private key and access token files are readable only by their owner.
 - R9. No command prints a private key, an access token, or a license; profile output reports only whether usable credentials exist.
 - R10. A WARP profile without usable credentials reports a distinct backend state that names re-registration as the fix, and opens no tunnel.
@@ -53,7 +53,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 
 **Tunnel engine**
 
-- R12. The engine opens a MASQUE Connect-IP tunnel to the registered endpoint, over QUIC by default, with a per-profile option to use the HTTP/2 path.
+- R12. The engine opens a MASQUE Connect-IP tunnel to the registered endpoint, over QUIC by default, with a per-profile option to use the HTTP/2 path, and the tunnel's own transport leaves through the host's physical link rather than the default route the tunnel installs.
 - R13. The engine reports the tunnel addresses assigned at registration as its self addresses, so route policy can compute its host sources.
 - R14. The engine reports connection-state changes through the update channel the existing engines use, so the supervisor reconciles without polling.
 - R15. The engine reconnects after a dropped tunnel with backoff and reports each transition, rather than exiting or blocking.
@@ -65,25 +65,25 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 **Routing**
 
 - R20. A WARP profile advertises `0.0.0.0/0` and `::/0` as its available routes.
-- R21. Selecting a WARP profile as exit node gives it the default route for each address family it has a source for.
+- R21. Selecting a WARP profile as exit node gives it the default route for both address families, and a selected WARP profile that is not connected keeps that default in place as a drop rather than letting the host's physical default take over.
 - R22. An explicit `routes bind` for a more specific prefix still wins over the WARP default.
 - R23. A WARP exit-node selection survives a restart, and validation of the stored selection is kind-aware.
 - R24. Only one profile holds the default route: selecting a WARP exit node clears a tailnet exit-node selection, and the reverse.
-- R25. A WARP profile that is not the selected exit node carries only the traffic an explicit binding sends to it.
+- R25. A WARP profile that is not the selected exit node carries only the traffic an explicit binding sends to it, and a binding to a zero-length prefix counts as covered by the advertised default.
 
 **DNS**
 
-- R26. While a WARP profile is the selected exit node, it contributes a configurable resolver address as the root `.` DNS route, as an exit profile does.
+- R26. While a WARP profile is the selected exit node, it contributes one resolver address as the root `.` DNS route, and lookups on that route dial through the same profile. The address defaults to `1.1.1.1`, `tailmix warp register --dns <address>` overrides it, and it is stored with the profile.
 - R27. A MagicDNS suffix from any tailnet still wins over the WARP root route by longest suffix.
-- R28. Unselecting WARP removes its DNS route, and a WARP profile that is not the exit node contributes no DNS route.
+- R28. Unselecting WARP removes its DNS route, a WARP profile that is not the exit node contributes no DNS route, and a selected WARP profile that is not connected contributes none either.
 
 **CLI and status**
 
-- R29. `tailmix profile list` and `tailmix status` show a WARP profile with its kind, backend state, and whether it holds the default route.
+- R29. `tailmix profiles list` and `tailmix status` show a WARP profile with its kind, backend state, and whether it holds the default route.
 - R30. `tailmix status` for a WARP profile shows its tunnel address, the time since its last successful connection, and an empty peer list.
 - R31. `tailmix exit-node` accepts a WARP profile name with no peer argument and lists the WARP profile among the available exit nodes.
 - R32. WARP errors use the existing error codes, plus one code that separates a credential or registration problem from an unavailable tunnel.
-- R33. `tailmix warp register` writes no profile when Cloudflare rejects the request or the network is unreachable.
+- R33. `tailmix warp register` writes no profile when Cloudflare rejects the request, the network is unreachable, or Terms of Service consent is refused.
 - R34. Completion for the new subcommand and its flags comes from the existing completion path.
 
 **Platform and safety**
@@ -100,7 +100,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 
 - **WARP behaves as a peerless exit node.** It advertises a full-tunnel default and reuses the existing default-route, longest-prefix, and exit-node-selection rules, so route policy gains no new class. Governs R20, R21, R22, R23, R24, R31. (session-settled: user-directed — chosen over a new route class: no new policy surface to learn or fail closed on)
 - **Support both registration and config import.** The Cloudflare registration API is called directly, and a usque `config.json` can be imported when one already exists. Governs R2, R3, R4, R7. (session-settled: user-directed — chosen over registration only: nobody must keep usque installed to migrate)
-- **WARP DNS behaves as an exit profile's DNS.** The root `.` route appears only while WARP is the selected exit node, and tailnet suffixes keep priority by longest match. Governs R26, R27, R28. (session-settled: user-directed)
+- **WARP DNS behaves as an exit profile's DNS.** The root `.` route appears only while WARP is the selected exit node, its resolver is a stored address dialed through the tunnel, and tailnet suffixes keep priority by longest match. Governs R26, R27, R28. (session-settled: user-directed)
 - **Linux only for this change.** The engine, the state-file tolerance, and the error path are scoped to Linux and to failing loudly elsewhere. Governs R35, R36. (session-settled: user-directed — chosen over macOS parity now: it splits the test surface)
 - **Fork usque rather than consume its `api` package.** Upstream `MaintainTunnel` returns nothing and reports connect state only through executable-path hooks, so a status channel and Go callbacks are unavoidable. Governs R12, R14, R15, R37, R38, R39. (session-settled: user-directed — chosen over shelling out to the usque binary: status, reconnect, and privacy control stay inside the daemon)
 
@@ -114,9 +114,9 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 ### Key Flows
 
 - F1. First registration.
-  - **Trigger:** The operator runs `tailmix warp register`.
+  - **Trigger:** The operator runs `tailmix warp register <name>`.
   - **Actors:** A1, A2, A4.
-  - **Steps:** The daemon requests registration, receives credentials and tunnel addresses, writes the profile, and starts the engine.
+  - **Steps:** The command takes Terms of Service consent, the daemon enrolls the device, receives credentials and tunnel addresses, writes the profile, and starts the engine.
   - **Outcome:** The tunnel is up and `tailmix status` reports the profile connected.
   - **Covered by:** R2, R7, R13.
 - F2. Unattended start.
@@ -152,7 +152,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 - F7. Import.
   - **Trigger:** The operator runs `tailmix warp register --config <path>`.
   - **Actors:** A1, A2.
-  - **Steps:** The profile is written from the file without a Cloudflare call, and the engine starts.
+  - **Steps:** The operator stops any other WARP client, the profile is written from the file without a Cloudflare call, and the engine starts.
   - **Outcome:** An existing usque registration works without re-registering.
   - **Covered by:** R4.
 - F8. Restart.
@@ -187,7 +187,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
   - **Then:** The first lookup reaches the tailnet resolver and the second reaches the WARP resolver.
 - AE4.
   - **Covers R21.**
-  - **Given:** WARP is the exit node and holds a source for both families.
+  - **Given:** WARP is the exit node and the profile has a tunnel address for both families.
   - **When:** The host sends to a public IPv4 address and to a public IPv6 address.
   - **Then:** Both leave through the WARP tunnel.
 - AE5.
@@ -209,7 +209,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
   - **Covers R15.**
   - **Given:** A WARP tunnel drops after a period of idleness.
   - **When:** The host sends new traffic.
-  - **Then:** The profile reports a reconnect transition and returns to running without a daemon restart or a command.
+  - **Then:** The profile reports a reconnect transition, unbound traffic is dropped rather than leaving through the physical default until it returns, and the profile returns to running without a daemon restart or a command.
 
 ### Success Criteria
 
@@ -245,7 +245,6 @@ None.
 - The device MTU, given the QUIC path and the 1280 default upstream warns about.
 - Whether the engine owns a `ChanTUN` or a second device type.
 - How registration reports progress when the terminal is not interactive.
-- Whether the HTTP/2 fallback is a flag, a profile field, or an automatic fallback.
 
 ### Sources and Research
 
