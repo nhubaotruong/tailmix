@@ -253,19 +253,21 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 
 KTD1. **The fork is a vendored package at `usque/`, not a module dependency.** Upstream `MaintainTunnel` reports nothing to its caller and can only be steered through executable hooks, and its CLI import graph would pull cobra, netstack, and netlink into the build. Governs R37, R38, R39.
 
-KTD2. **The engine passes its own `ChanTUN` to the tunnel through `api.NewNetstackAdapter`.** That adapter already accepts any `tun.Device`, so no second device type is needed and the packet path adds no copy. Governs R13, R18.
+KTD2. **The engine passes its own `ChanTUN` to the tunnel through a rewritten device adapter.** The upstream adapter targets the zx2c4 batch signature while `ChanTUN` implements the tailscale one, so the adapter is rewritten to this module's `tun.Device` and a compile-time assertion pins the pair. Governs R13, R18.
 
-KTD3. **The engine answers DNS on the tunnel's packet path and refuses `Dial`.** A pending-exchange map splits tunnel ingress between DNS replies and the device, and query packets are injected on egress, so no userspace TCP/IP stack joins the build. Governs R26.
+KTD3. **The engine answers DNS through `dns.ProfileDNSQueryer` and refuses `Dial`.** `QueryDNS` builds the query, injects it on egress, and awaits the matching reply through a pending-exchange map, so no userspace TCP/IP stack joins the build. Governs R26.
 
-KTD4. **A WARP exit-node selection keeps the peer-shaped fields as optional detail.** `NodeID` carries the registration ID and `PeerIP` the tunnel IPv4 when both are known, and neither is required to keep the selection. Governs R23, R24, R30.
+KTD4. **A WARP exit-node selection is matched by profile ID.** `NodeID` carries the registration ID and `PeerIP` the tunnel IPv4 as optional detail, so a selection activates without either and still routes when the engine reports no identity. Governs R23, R24, R30.
 
-KTD5. **A zero-length advertised route covers an explicit binding and never an accept-all import.** The import guards stay as they are; only the explicit-binding coverage check learns about a default advertisement. Governs R20, R25.
+KTD5. **A zero-length advertised route covers an explicit binding in a family the advertiser has an address in, and never an accept-all import.** The import guards stay as they are; only the explicit-binding coverage check learns about a default advertisement. Governs R20, R25.
 
-KTD6. **The tunnel's transport socket comes from `netns.Listener`.** That helper already applies the repository's bypass mark, which keeps an engine's own packets off an installed default route. Governs R12.
+KTD6. **The tunnel takes both its sockets from `netns`.** `netns.Listener` supplies the QUIC packet socket and `netns.NewDialer` the HTTP/2 dialer, so both paths carry the repository's bypass mark and neither re-enters the tunnel's own default. Governs R12.
 
 KTD7. **Registration runs in the daemon behind the control API.** The CLI collects consent and calls the same apply surface the WireGuard kind uses, so `state.json` keeps one writer. Governs R2, R3, R11, R33.
 
-KTD8. **Secrets live in one owner-only file per profile.** `warp.json` in the profile state directory holds the private key, registration ID, access token, and license; `state.json` carries the endpoints, the endpoint public key, the tunnel addresses, the resolver, and the HTTP/2 choice. Governs R7, R8, R9.
+KTD8. **Secrets live in one owner-only file per profile, paired with its state entry by a generation ID.** `warp.json` in the profile state directory holds the private key, registration ID, access token, and license; `state.json` carries the endpoints, the endpoint public key, the tunnel addresses, the resolver, and the HTTP/2 choice. Governs R7, R8, R9, R11.
+
+KTD9. **The fork's reconnect loop runs in one goroutine with bounded exponential backoff and reports every attempt outcome.** Upstream's fixed delay and its pre-connect device read consume the first packet after a drop, which R15 and R21 forbid. Governs R15, R19.
 
 ### High-Level Technical Design
 
@@ -292,13 +294,13 @@ The device wrapper is the only place where direction changes. On egress it hands
 
 ### Implementation Constraints
 
-- The `warp` kind loads on every platform, so a state file written on Linux still opens on macOS; only engine construction is gated by the platform.
-- `usque/` keeps its own `go.mod` until the snapshot commit lands, so the import adds no compilable package.
+- The `warp` kind loads on every platform, so a state file written on Linux still opens on macOS; the register apply surface and engine construction are the only platform-gated paths.
+- `usque/` keeps its own `go.mod` in the U1 snapshot, so the copied tree stays out of `./...`; U2 removes it when the fork joins this module.
 - The supervisor's reconcile order and the single-writer rule for `state.json` stay as they are.
 
 ### Sequencing
 
-U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U3 gates U6. U8 comes last.
+U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U5 and U7 gate U6. U8 follows U3, U4, U6, and U7. U9 follows U8.
 
 ---
 
@@ -324,23 +326,25 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U3 gates U6. U8 comes last.
 
 ### U2. Adapt the fork into an embeddable library
 
-**Goal.** The vendored tree builds inside this module, reports connection state to Go callers, accepts a caller-supplied transport socket, and never exits the process or logs an endpoint.
+**Goal.** The vendored tree builds inside this module, reports connection state to Go callers, takes a caller-supplied transport for both paths, backs off on reconnect, and never exits the process or logs an endpoint.
 
 **Requirements.** R12, R38, R39, R40, R41.
 
 **Dependencies.** U1.
 
-**Files.** `usque/api/tunnel.go`, `usque/api/masque.go`, `usque/api/hooks.go`, `usque/go.mod` (removed), `usque/go.sum` (removed), `go.mod`, `go.sum`, `licenses/tailmix.md`.
+**Files.** `usque/api/tunnel.go`, `usque/api/masque.go`, `usque/api/hooks.go`, `usque/README.md`, `usque/go.mod` (removed), `usque/go.sum` (removed), `go.mod`, `go.sum`, `licenses/tailmix.md`.
 
-**Approach.** Remove the nested module files and rewrite the package path to `github.com/maisem/tailmix/usque`. Prune `cmd/`, `models/`, and the CLI helpers under `internal/` that pull in cobra, netstack, and netlink. Replace the fatal exits with returned errors, drop the endpoint from the connection log line, replace the executable hooks with Go callbacks, and add a hook for connection-state transitions. Add a transport constructor field so the caller supplies the QUIC or HTTP/2 socket. Regenerate the license report.
+**Approach.** Remove the nested module files and rewrite the package path to `github.com/maisem/tailmix/usque`. Prune `cmd/`, `api/l4proxy.go`, and the CLI helpers under `internal/` that pull in cobra, netstack, and netlink; keep `models/` because the registration call returns its types. Rewrite the device adapter to the batch `Read(slab, []tun.ReadPacket)` shape and assert the interface at compile time. Replace the fatal exits with returned errors, drop the endpoint from the connection log, and redact transport errors so no `net` error text carries the endpoint. Replace the executable hooks with Go callbacks and add one for connection-state transitions. Give the package a transport value that carries `ListenPacket` from `netns.Listener` and `DialContext` from `netns.NewDialer`, and thread it through both the QUIC and HTTP/2 constructors, keeping the twenty-byte connection ID. Set the loop to always reconnect, remove the pre-connect device read, replace the fixed delay with bounded exponential backoff from one second to thirty with jitter, and report a transition from every attempt outcome. Record the behavioral differences in `usque/README.md` and regenerate the license report.
 
 **Test scenarios.**
 
 - A cancelled context makes the tunnel loop return without exiting the process.
-- The tunnel path emits no log line that contains the endpoint address.
-- A transport supplied by the caller is the socket the tunnel uses.
+- No log line contains the endpoint address, including a forced failed connect and a dropped connection.
+- The transport passed in by the caller is the socket the tunnel uses, and the HTTP/2 path dials through its dialer.
+- A packet written to the adapter arrives on the `ChanTUN` channel.
+- After a remote close the loop retries, the delay grows, and no packet is read from the device before a connect.
 
-**Verification.** `go build ./...` links no cobra, netstack, netlink, or water package, and `make licenses-check` passes.
+**Verification.** `go list -deps ./usque/api` names no cobra, water, or netlink package, and `make licenses-check` passes.
 
 ### U3. Add the WARP profile kind and its stored configuration
 
@@ -371,9 +375,9 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U3 gates U6. U8 comes last.
 
 **Dependencies.** U2, U3.
 
-**Files.** `profile/warpengine.go`, `profile/warpengine_test.go`, `cmd/tailmixd/supervisor.go`.
+**Files.** `profile/warpengine.go`, `profile/warpengine_test.go`, `profile/profile.go`, `cmd/tailmixd/supervisor.go`.
 
-**Approach.** Mirror `WireGuardEngine` for lifecycle and status. Start the tunnel loop with the profile's `ChanTUN` behind the device adapter, and publish the tunnel addresses even while the tunnel is down. Report the registration ID as the exit-node ID and the two zero-length prefixes as available routes. Publish the accept-all preference as set so the supervisor skips the route controller, and implement no other optional interface. Build the transport from `netns.Listener` and the per-profile path choice. Close cancels the context and waits for the loop.
+**Approach.** Mirror `WireGuardEngine` for lifecycle and status. Start the tunnel loop with the profile's `ChanTUN` behind the device adapter, and publish the tunnel addresses even while the tunnel is down. Report the registration ID as the exit-node ID, the two zero-length prefixes as available routes, and the time of each transition to running. Build the TLS configuration from the stored private key and endpoint public key, comparing the presented certificate key with the stored one and never skipping verification. Build the transport from the `netns` listener and dialer pair and the per-profile path choice. Publish the accept-all preference as set so the supervisor skips the route controller, and implement no optional interface other than the DNS queryer in U5. Close cancels the context and waits for the loop.
 
 **Patterns to follow.** `profile/wireguardengine.go` for status projection and lifecycle; `profile/tsnetengine.go` for update publication.
 
@@ -382,7 +386,8 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U3 gates U6. U8 comes last.
 - `Covers AE4.` A started engine reports both tunnel addresses and an exit-node ID equal to the registration ID.
 - `Covers AE8.` A dropped connection reports an unavailable transition and then a running one, with no restart, and the reported addresses never go empty.
 - A cancelled context leaves no goroutine behind.
-- A rejected handshake reports unavailable and does not block the supervisor.
+- A handshake presenting a different endpoint key reports unavailable and opens no tunnel.
+- A reconnect updates the reported time since the last successful connection.
 
 **Verification.** `go test ./profile/... ./cmd/tailmixd/...`.
 
@@ -396,13 +401,14 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U3 gates U6. U8 comes last.
 
 **Files.** `profile/warpdns.go`, `profile/warpdns_test.go`, `profile/warpengine.go`.
 
-**Approach.** Build a query for the stored resolver, queue it as a UDP packet from the tunnel source address, and wait for the matching reply. Match ingress on source address, source port, and transaction ID before falling through to the channel. Bound the wait by the existing forwarder timeout and discard a stale exchange. Advertise the root `.` domain from the profile's DNS routes.
+**Approach.** Implement `dns.ProfileDNSQueryer` on the engine, with `QueryDNS` building the query for the stored resolver, injecting it on egress, and awaiting the matching reply; also implement the optional context-aware variant so the forwarder can cancel. Inside it, allocate a fresh random source port and rewrite the transaction ID for each tunnel-side exchange, keep the pending map keyed on that rewritten tuple, and restore the client's ID on the reply. Match ingress on source address, source port, and transaction ID before falling through to the channel. Bound the wait by the existing forwarder timeout and discard a stale exchange. Leave the root `.` route to the exit-profile rule that already produces it.
 
 **Test scenarios.**
 
 - A name resolves through the tunnel and returns the upstream answer.
+- The engine satisfies `dns.ProfileDNSQueryer`, and a `.` route against a `warp` profile configures without an error.
 - A reply from an unrelated address reaches the device, not the pending exchange.
-- Two concurrent queries with different IDs both resolve, and a timed-out query leaves nothing pending.
+- Two concurrent queries that share a client transaction ID each receive their own answer, and a timed-out query leaves nothing pending.
 
 **Verification.** `go test ./profile/...`, and on a Linux host a lookup through the WARP exit profile returns an answer from the configured resolver.
 
@@ -412,11 +418,11 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U3 gates U6. U8 comes last.
 
 **Requirements.** R21, R23, R24, R31.
 
-**Dependencies.** U3.
+**Dependencies.** U3, U5, U7.
 
 **Files.** `cmd/tailmixd/policyapi.go`, `cmd/tailmixd/policyapi_test.go`, `controlapi/types.go`, `controlapi/server.go`, `controlapi/client.go`, `controlapi/server_test.go`, `cmd/tailmix/main.go`, `cmd/tailmix/main_test.go`.
 
-**Approach.** Accept a request without a peer when the profile kind is `warp`, and store whatever detail the status carries. Add the profile to the available exit-node list with its location, and mark it installed by the same string match the peer path uses. Make the peer operand optional in the CLI for that kind.
+**Approach.** Accept a request without a peer when the profile kind is `warp`, and store whatever detail the status carries. Add the profile to the available exit-node list with its location, and mark it installed by profile ID rather than by the peer string match. Make the peer operand optional in the CLI for that kind.
 
 **Test scenarios.**
 
@@ -437,39 +443,62 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U3 gates U6. U8 comes last.
 
 **Files.** `routingpolicy/policy.go`, `routingpolicy/policy_test.go`, `cmd/tailmixd/main.go`.
 
-**Approach.** Let a zero-length advertised route cover an explicit binding while the accept-all import path keeps skipping it, and let that binding past the reserved-range overlap check for a profile that advertises it. Keep the default installed for a selected WARP profile that is not running, so packets reach a device that drops them instead of the physical default. Drop the root `.` automatic route while that profile is not running.
+**Approach.** Make both activation helpers kind-aware: a `warp` selection matches on profile ID, does not compare the registration ID when the engine reports none, and counts as active in any state, so a stopped profile still owns the default. Seed the exit source for a selected `warp` profile from the stored tunnel addresses, so the default survives a cold start and a dropped engine. Let a zero-length advertised route cover an explicit binding only in a family the advertiser has an address in, while the accept-all import path keeps skipping it, and let that binding past the reserved-range overlap check only for kind `warp` at both the policy and the table check. Drop the root `.` automatic route while that profile is not running.
 
 **Test scenarios.**
 
 - `Covers AE5.` With WARP holding the default, `10.1.2.3` reaches a tailnet bound to `10.0.0.0/8` and a public address leaves through WARP.
 - An explicit `0.0.0.0/0` binding to WARP is accepted as covered.
+- An IPv4-only tunnel with an explicit `::/0` binding still reconciles, and the other profiles keep their routes.
+- A `0.0.0.0/0` binding to a tailnet exit node is still rejected as a reserved-range overlap.
 - `Covers AE3.` With a tailnet suffix and the WARP root route both present, `host.corp.example` reaches the tailnet resolver and `example.com` reaches the WARP resolver.
 - The same advertisement does not become an accept-all import.
 - A disconnected selected WARP profile keeps both defaults with no host route, so packets drop.
+- A stopped selected WARP profile keeps both defaults from its stored addresses.
 - Its `.` route disappears while it is disconnected.
 
 **Verification.** `go test ./routingpolicy/... ./cmd/tailmixd/...`.
 
-### U8. Expose WARP through the CLI, status, and docs
+### U8. Apply WARP profiles from the CLI
 
-**Goal.** Registration, import, inspection, and removal work from the CLI, and the docs describe the new kind.
+**Goal.** Registration, import, credential replacement, and removal work from the CLI on Linux and refuse before writing on any other platform.
 
-**Requirements.** R2, R3, R4, R6, R9, R29, R30, R32, R33, R34.
+**Requirements.** R2, R3, R4, R6, R9, R11, R12, R26, R32, R33, R35.
 
-**Dependencies.** U1 through U7.
+**Dependencies.** U3, U4.
 
-**Files.** `cmd/tailmixd/warpapi.go`, `cmd/tailmixd/warpapi_test.go`, `controlapi/types.go`, `controlapi/server.go`, `controlapi/client.go`, `controlapi/server_test.go`, `cmd/tailmix/main.go`, `cmd/tailmix/completion.go`, `cmd/tailmix/main_test.go`, `docs/warp.md`, `docs/architecture.md`, `docs/profile-management.md`.
+**Files.** `cmd/tailmixd/warpapi.go`, `cmd/tailmixd/warpapi_test.go`, `controlapi/types.go`, `controlapi/server.go`, `controlapi/client.go`, `controlapi/server_test.go`, `cmd/tailmix/main.go`, `cmd/tailmix/main_test.go`.
 
-**Approach.** Add an apply surface that mirrors the WireGuard one: find or create the profile, write the owner-only credential file, and save state before the dataplane starts. Registration performs the consent-gated pair of Cloudflare calls in the daemon, `--jwt-file` switches to enrollment, and `--config` imports without a network call. Replace the credential file and its state entry through a temporary file and rename, so an interrupted re-key leaves the previous pair in place. Print kind, state, tunnel addresses, resolver, last connection, and whether the profile holds the default, with no secret. Add the error code that separates a credential problem from an unavailable tunnel. Add the completion entries and the documentation.
+**Approach.** Add an apply surface that mirrors the WireGuard one: check the platform first and refuse before any write, then find or create the profile, write the owner-only credential file, and save state before the dataplane starts. Registration performs the consent-gated pair of Cloudflare calls in the daemon, takes `--dns <address>` and `--transport quic|http2` and stores both with the profile, `--jwt-file` switches to enrollment, and `--config` imports without a network call and reminds the operator to delete the source file once the profile starts. Replace the credential file and its state entry under a fresh generation ID so a mismatch on load returns to the re-registration state. Discard the team token from the decoded request once enrollment returns, never echo it, and add the error code that separates a credential problem from an unavailable tunnel.
 
 **Test scenarios.**
 
 - A registration stores the profile, writes an owner-only credential file, and reports the profile with no secret in the output.
 - A rejected registration leaves no profile behind.
+- A failing `--jwt-file` enrollment prints no token.
 - An import takes both tunnel addresses and contacts no endpoint.
 - An interrupted re-registration leaves the previous credential file and state entry in place.
 - A plain removal keeps the credential file and a purge deletes it.
+- On a darwin fixture registration and import fail with the platform error and the state file is unchanged.
+- `--dns 9.9.9.9` and `--transport http2` reach the stored profile and the resolver set.
+
+### U9. Show WARP in status and document the kind
+
+**Goal.** `tailmix profiles list` and `tailmix status` describe a WARP profile, shell completion covers the new commands, and the docs explain the kind.
+
+**Requirements.** R29, R30, R34.
+
+**Dependencies.** U8.
+
+**Files.** `cmd/tailmix/main.go`, `cmd/tailmix/completion.go`, `cmd/tailmix/main_test.go`, `docs/warp.md`, `docs/architecture.md`, `docs/profile-management.md`.
+
+**Approach.** Print the kind, the connection state, the tunnel address, the time since the last successful connection, and whether the profile holds the default, with an empty peer list and no secret. Add the completion entries and the documentation for the kind, its route and DNS behavior, and its limits.
+
+**Test scenarios.**
+
 - `tailmix profiles list` shows the kind for a WARP profile.
+- `tailmix status` shows the last successful connection and an empty peer list.
+- No WARP command output contains a private key, an access token, a license, or a team token.
 
 **Verification.** `go test ./cmd/tailmix/... ./cmd/tailmixd/... ./controlapi/...`.
 
@@ -478,13 +507,14 @@ U1 gates U2. U2 and U3 gate U4. U4 gates U5 and U7. U3 gates U6. U8 comes last.
 ## Verification Contract
 
 - `make check` at the tip of the branch: unit tests, vet, staticcheck, govulncheck, module tidiness, the license check, and the install test.
+- `go list -deps ./usque/api` names no cobra, water, or netlink package, so the fork carries no CLI or netstack surface.
 - Targeted runs while working: `go test ./profile/... ./state/... ./warpcfg/... ./routingpolicy/... ./cmd/tailmixd/... ./cmd/tailmix/... ./controlapi/...`.
 - One manual Linux run per release candidate: register a profile, reach a public address, resolve a public name, read `tailmix status`, then select a tailnet exit node and confirm the WARP default withdraws. This run needs real credentials, so it is recorded in the change description rather than automated.
 
 ## Definition of Done
 
 - Each unit is committed separately and `make check` passes at the tip.
-- AE1, AE2, AE5, AE6, and AE7 hold under unit tests; AE3, AE4, and AE8 hold under the manual run.
-- No command output contains a private key, an access token, or a license.
+- Every acceptance example holds under the unit scenario that names it, and AE3, AE4, and AE8 are additionally confirmed by the manual Linux run.
+- No command output or log line contains a private key, an access token, a license, a team token, an IP address, a DNS name, or a packet endpoint.
 - `docs/warp.md` exists, and `docs/architecture.md` and `docs/profile-management.md` describe the kind.
 - Abandoned attempt code and temporary logging are removed.
