@@ -276,7 +276,9 @@ func newHTTP2Client(baseTLSConfig *tls.Config, endpoint *net.TCPAddr, dial func(
 	tlsConfig := baseTLSConfig.Clone()
 	tlsConfig.NextProtos = []string{"h2"}
 
+	//lint:ignore SA1019 http2.Transport pins the dialer to the chosen endpoint; http.Transport negotiates HTTP/2 from a TLS state this path cannot provide.
 	transport := &http2.Transport{
+		//lint:ignore SA1019 See the note on the transport above.
 		DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
 			conn, err := dial(ctx, network, endpoint.String())
 			if err != nil {
