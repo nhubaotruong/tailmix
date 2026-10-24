@@ -16,6 +16,14 @@ The fork also changes remote logging behavior:
 - `Server.LogUpload` explicitly enables it; and
 - `Server.LogUploadURL` can replace the default upload base URL.
 
+When a `Server.Tun` is provided, the fork still enables netstack forwarding for
+non-local destinations (`ProcessSubnets`), as tailscaled does in
+userspace-networking mode. Packets for the profile's own addresses keep flowing
+through the provided TUN, so tailmix's packet mapping is unchanged. This lets a
+profile serve its tailnet as an exit node or subnet router. The fork also
+reports the engine as a netstack router, so Tailscale skips kernel IP
+forwarding health checks it does not need.
+
 On restart, the fork retains preferences written through the native Tailscale
 LocalAPI. Server-owned settings such as the embedded hostname still take
 precedence, and an explicitly configured `Server.ControlURL` still overrides a

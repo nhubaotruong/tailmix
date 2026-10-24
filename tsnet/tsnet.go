@@ -838,15 +838,21 @@ func (s *Server) start() (reterr error) {
 	}
 	sys.Tun.Get().Start()
 	sys.Set(ns)
+	// Forward packets for non-local destinations in netstack, as tailscaled
+	// does in userspace mode. This is what serves subnet routes and exit node
+	// traffic for tailnet peers.
+	ns.ProcessSubnets = true
 	if s.Tun == nil {
 		// Only process packets in netstack when using the default fake TUN.
-		// When a TUN is provided, let packets flow through it instead.
 		ns.ProcessLocalIPs = true
-		ns.ProcessSubnets = true
 	} else {
-		// When using a TUN, check gVisor for registered endpoints to handle
-		// packets for tsnet listeners and outbound connection replies.
+		// When using a TUN, let packets for local addresses flow through it and
+		// check gVisor for registered endpoints to handle packets for tsnet
+		// listeners and outbound connection replies.
 		ns.CheckLocalTransportEndpoints = true
+		// Routing is partly netstack-based, so report that and skip kernel
+		// IP forwarding health checks this engine does not need.
+		sys.NetstackRouter.Set(true)
 	}
 	ns.GetTCPHandlerForFlow = s.getTCPHandlerForFlow
 	ns.GetUDPHandlerForFlow = s.getUDPHandlerForFlow
