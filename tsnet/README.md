@@ -20,9 +20,11 @@ When a `Server.Tun` is provided, the fork still enables netstack forwarding for
 non-local destinations (`ProcessSubnets`), as tailscaled does in
 userspace-networking mode. Packets for the profile's own addresses keep flowing
 through the provided TUN, so tailmix's packet mapping is unchanged. This lets a
-profile serve its tailnet as an exit node or subnet router. The fork also
-reports the engine as a netstack router, so Tailscale skips kernel IP
-forwarding health checks it does not need.
+profile serve its tailnet as an exit node or subnet router. `GetTCPHandlerForFlow`
+and `GetUDPHandlerForFlow` no longer intercept flows to destinations outside the
+profile's own addresses, so netstack forwards them instead of resetting or
+dropping them. The fork also reports the engine as a netstack router, so
+Tailscale skips kernel IP forwarding health checks it does not need.
 
 On restart, the fork retains preferences written through the native Tailscale
 LocalAPI. Server-owned settings such as the embedded hostname still take

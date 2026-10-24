@@ -661,6 +661,9 @@ func (s *Server) CertDomains() []string {
 // has not yet joined a tailnet or is otherwise unaware of its own IP addresses,
 // the returned ip4, ip6 will be !netip.IsValid().
 func (s *Server) TailscaleIPs() (ip4, ip6 netip.Addr) {
+	if s.lb == nil {
+		return
+	}
 	nm := s.lb.NetMapNoPeers()
 	if nm == nil {
 		return
@@ -1175,6 +1178,10 @@ func (s *Server) getTCPHandlerForFlow(src, dst netip.AddrPort) (handler func(net
 				return connHandler, intercept
 			}
 		}
+		if !s.isNativeIP(dst.Addr()) {
+			// Let netstack forward exit node and subnet route traffic.
+			return nil, false
+		}
 		return nil, true // don't handle, don't forward to localhost
 	}
 	return ln.handle, true
@@ -1183,9 +1190,19 @@ func (s *Server) getTCPHandlerForFlow(src, dst netip.AddrPort) (handler func(net
 func (s *Server) getUDPHandlerForFlow(src, dst netip.AddrPort) (handler func(nettype.ConnPacketConn), intercept bool) {
 	ln, ok := s.listenerForDstAddr("udp", dst, false)
 	if !ok {
+		if !s.isNativeIP(dst.Addr()) {
+			return nil, false // let netstack forward exit node and subnet route traffic
+		}
 		return nil, true // don't handle, don't forward to localhost
 	}
 	return func(c nettype.ConnPacketConn) { ln.handle(c) }, true
+}
+
+// isNativeIP reports whether ip is one of this node's own Tailscale addresses,
+// the only destinations netstack may not forward to the host.
+func (s *Server) isNativeIP(ip netip.Addr) bool {
+	ip4, ip6 := s.TailscaleIPs()
+	return ip == ip4 || ip == ip6
 }
 
 // Listen announces only on the Tailscale network.

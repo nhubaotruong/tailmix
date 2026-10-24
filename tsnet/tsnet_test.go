@@ -1,10 +1,23 @@
 package tsnet
 
 import (
+	"net/netip"
 	"testing"
 
 	"tailscale.com/ipn"
 )
+
+func TestFlowHandlersDoNotInterceptNonLocalDestinations(t *testing.T) {
+	server := &Server{}
+	src := netip.MustParseAddrPort("100.64.0.9:1234")
+	dst := netip.MustParseAddrPort("1.1.1.1:443")
+	if _, intercept := server.getTCPHandlerForFlow(src, dst); intercept {
+		t.Fatal("TCP flow to a non-local destination was intercepted, so netstack cannot forward it")
+	}
+	if _, intercept := server.getUDPHandlerForFlow(src, dst); intercept {
+		t.Fatal("UDP flow to a non-local destination was intercepted, so netstack cannot forward it")
+	}
+}
 
 func TestStartupPrefsPreserveNativeTailscaleSettings(t *testing.T) {
 	saved := ipn.NewPrefs()
