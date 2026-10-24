@@ -47,6 +47,9 @@ type WarpEngine struct {
 	// maintain is the tunnel loop, replaced in tests.
 	maintain func(context.Context, api.MaintainTunnelConfig) error
 
+	// dev answers DNS through the tunnel and carries tunnel packets.
+	dev *warpDNSDevice
+
 	mu            sync.Mutex
 	started       bool
 	closed        bool
@@ -62,11 +65,15 @@ func NewWarpEngine(cfg WarpEngineConfig) *WarpEngine {
 	if cfg.Logf == nil {
 		cfg.Logf = logger.Discard
 	}
-	return &WarpEngine{
+	engine := &WarpEngine{
 		cfg:      cfg,
 		maintain: api.MaintainTunnel,
 		updateCh: make(chan struct{}),
 	}
+	if cfg.Tun != nil {
+		engine.dev = newWarpDNSDevice(cfg.Tun, cfg.Config)
+	}
+	return engine
 }
 
 func (e *WarpEngine) Start(ctx context.Context) error {
@@ -97,6 +104,9 @@ func (e *WarpEngine) Start(ctx context.Context) error {
 	e.started = true
 	e.connected = false
 	e.notifyLocked()
+	if e.dev != nil {
+		e.dev.start()
+	}
 	go e.run(runCtx, tunnelCfg)
 	return nil
 }
@@ -129,11 +139,15 @@ func (e *WarpEngine) tunnelConfig(netMon *netmon.Monitor) (api.MaintainTunnelCon
 	}
 	listener := netns.Listener(e.cfg.Logf, netMon)
 	dialer := netns.NewDialer(e.cfg.Logf, netMon)
+	device := e.cfg.Tun
+	if e.dev != nil {
+		device = e.dev
+	}
 	return api.MaintainTunnelConfig{
 		TLSConfig:       tlsConfig,
 		KeepalivePeriod: warpKeepalivePeriod,
 		Endpoint:        endpoint,
-		Device:          api.NewDeviceAdapter(e.cfg.Tun, warpMTU),
+		Device:          api.NewDeviceAdapter(device, warpMTU),
 		MTU:             warpMTU,
 		UseHTTP2:        e.cfg.Config.UseHTTP2,
 		Transport: api.Transport{
@@ -181,10 +195,14 @@ func (e *WarpEngine) Close() error {
 	if netMon != nil {
 		netMon.Close()
 	}
+	var err error
 	if e.cfg.Tun != nil {
-		return e.cfg.Tun.Close()
+		err = e.cfg.Tun.Close()
 	}
-	return nil
+	if e.dev != nil {
+		e.dev.stop()
+	}
+	return err
 }
 
 func (e *WarpEngine) Dial(context.Context, string, string) (net.Conn, error) {
