@@ -103,6 +103,7 @@ The first positional token always names a command namespace, never a profile:
 tailmix version
 tailmix status [--json]
 tailmix profiles <lifecycle-command> [arguments]
+tailmix warp register <name> [flags]
 tailmix routes <policy-command> [arguments]
 tailmix exit-node <policy-command> [arguments]
 tailmix dns routes <policy-command> [arguments]
@@ -116,7 +117,9 @@ client version when the daemon is unavailable. `status` is the daemon-wide
 overview: active profiles, configured or imported IP routes, the selected exit
 node, effective DNS routes, and configured DNS search domains. It omits
 advertised-but-unaccepted choices; the corresponding `list` commands show those.
-`profiles` owns tailmix lifecycle operations. `tailscale` delegates to the
+`profiles` owns tailmix lifecycle operations. `warp` owns WARP registration,
+its only kind-specific entry point; every other WARP operation uses the
+ordinary profile commands. `tailscale` delegates to the
 selected profile's upstream Tailscale CLI, and `ts` is its exact alias. A
 profile name appears only as an operand or the value of `--profile`. `routes`
 owns daemon-wide IP route policy, and `exit-node` owns the one daemon-wide
@@ -444,11 +447,20 @@ tailmix profiles list [--all] [--json]
 The human-readable output is stable enough for people, not scripts:
 
 ```text
-PROFILE  ENABLED  RUNTIME      TAILNET          PEERS  ERROR
-home     yes      running      home.ts.net      14
-lab      no       disabled
-work     yes      needs-login                  0
+PROFILE  KIND       ENABLED  RUNTIME      BACKEND     DEFAULT  PEERS  LAST CONNECTED  TAILNET          ERROR
+home     tailscale  yes      running      Running     no       14     2h ago          home.ts.net
+edge     warp       yes      running      Connected   yes      0      4s ago
+lab      wireguard  no       disabled               no       3                       lab.example
+work     tailscale  yes      needs-login  NeedsLogin  no       0                                       work.ts.net
 ```
+
+`KIND` is `tailscale`, `wireguard`, or `warp`. `BACKEND` is the state the
+profile's engine reports, so a WARP profile shows its tunnel state there. For a
+WARP profile without usable credentials, `RUNTIME` is `error` and `BACKEND` is
+`NeedsReRegistration`. `DEFAULT` names the profile that holds the default
+route, which for a WARP profile means it is the selected exit node. `LAST CONNECTED` is the time since the profile's last successful
+connection, and stays empty when the kind does not report one. A WARP profile
+has no peers, so its peer count is `0`.
 
 JSON is the scripting interface. Profiles are sorted by name in both formats.
 Listing is a non-blocking snapshot and never waits for a profile to become
@@ -462,11 +474,14 @@ tailmix profiles show <name> [--json]
 
 The result includes:
 
-- Persisted configuration: stable profile ID, profile name, state directory,
-  hostname, control URL, and enabled state.
-- Runtime state and last lifecycle error.
+- Persisted configuration: stable profile ID, profile name, profile kind, state
+  directory, hostname, control URL, and enabled state.
+- Runtime state, last lifecycle error, and whether the profile holds the
+  default route.
 - Tailscale backend state, login URL, tailnet suffix, self DNS name and
   addresses, peer count, and shields-up state when available.
+- For a WARP profile: the kind, the tunnel addresses, the time since the last
+  successful connection, and an empty peer list.
 - Approved primary subnet routes and observed DNS routes, plus the IP and DNS
   bindings pinned to the profile.
 - The profile LocalAPI socket path when the engine is running.
@@ -596,6 +611,32 @@ daemon state file, is shared by another profile, or does not resolve beneath an
 explicitly allowed profile-state root. Partial purge failure leaves the profile
 removed but reports which retained data could not be deleted.
 
+### `warp register`
+
+```text
+tailmix warp register <name> \
+  [--jwt-file <path> | --config <path>] \
+  [--dns <address>] \
+  [--transport quic|http2] \
+  [--json]
+```
+
+WARP is a profile kind beside `tailscale` and `wireguard`, and it uses the
+ordinary `profiles` commands for enable, disable, rename, and removal. This
+command is its only kind-specific entry point. It creates or reconfigures the
+named profile, stores its credentials in the profile's state directory, and
+starts it in one request; see [Cloudflare WARP profiles](warp.md).
+
+Without `--jwt-file` or `--config` the daemon registers a consumer account with
+Cloudflare and the CLI asks for Terms of Service consent first. `--jwt-file`
+enrolls through ZeroTrust and reads the team token from the file so it never
+appears in the argument list. `--config` imports a `config.json` written by the
+usque CLI and does not contact Cloudflare. `--dns` defaults to `1.1.1.1`, and
+`--transport` defaults to `quic`.
+
+The output and `--json` body are the profile's kind, transport, resolver, and
+tunnel addresses. Credentials are never printed.
+
 ## Exit status and errors
 
 The CLI uses:
@@ -622,7 +663,9 @@ Initial codes should include `invalid_request`, `profile_exists`,
 `exit_node_not_found`, `exit_node_ambiguous`, `exit_node_unavailable`,
 `profile_unavailable`,
 `profile_has_bindings`, `permission_denied`, `runtime_start_failed`,
-`dns_configuration_failed`, `reconcile_failed`, and `purge_failed`.
+`dns_configuration_failed`, `reconcile_failed`, `purge_failed`,
+`warp_credentials`, and `warp_unsupported_platform`. `warp_credentials`
+separates a credential or registration problem from an unavailable tunnel.
 
 ## Daemon control API
 
@@ -657,6 +700,7 @@ POST   /v1/profiles/by-name/{escaped-profile-name}/enable
 POST   /v1/profiles/by-name/{escaped-profile-name}/disable
 POST   /v1/profiles/by-name/{escaped-profile-name}/restart
 DELETE /v1/profiles/by-name/{escaped-profile-name}?purge=false
+POST   /v1/warp
 
 GET    /v1/routes
 PUT    /v1/routes
@@ -690,6 +734,7 @@ The profile resource separates desired state from observed state:
 {
   "id": "p_01k2x7vq3c8m",
   "name": "work",
+  "kind": "tailscale",
   "stateDir": "/var/db/tailmix/profiles/p_01k2x7vq3c8m",
   "hostname": "tailmix-a2c123",
   "enabled": true,
@@ -711,7 +756,10 @@ The profile resource separates desired state from observed state:
 
 `runtimeState` is one of `disabled`, `starting`, `needs-login`, `running`,
 `stopping`, or `error`. It is tailmix lifecycle state; `backendState` is the
-profile's upstream Tailscale state.
+profile's upstream state. For the `warp` kind that upstream state is the tunnel
+state and includes `NeedsReRegistration` when the stored credentials cannot be
+used. `lastConnected` is the last successful connection the kind reports, and
+`defaultRoute` is true while the profile holds the default route.
 
 IP and DNS route resources report the persisted binding and its current
 realization together:
@@ -1024,10 +1072,12 @@ type DNSRouteBinding struct {
 type Profile struct {
     ID string `json:"id"`
     Name string `json:"name"`
+    Kind string `json:"kind,omitempty"`
     Disabled bool `json:"disabled,omitempty"`
     Removed bool `json:"removed,omitempty"`
     AcceptAllRoutes bool `json:"acceptAllRoutes,omitempty"`
     AcceptAllDNSRoutes bool `json:"acceptAllDnsRoutes,omitempty"`
+    Warp *warpcfg.Config `json:"warp,omitempty"`
     // Existing engine configuration fields...
 }
 ```

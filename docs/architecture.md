@@ -3,8 +3,9 @@
 > Implementation snapshot: September 2026
 
 tailmix runs an independent network engine for every profile, then joins their
-packet paths behind one host TUN. An engine is either an embedded Tailscale node
-or a userspace raw WireGuard device. Stable local addresses remove cross-profile
+packet paths behind one host TUN. An engine is one of three profile kinds: an
+embedded Tailscale node, a userspace raw WireGuard device, or a userspace
+Cloudflare WARP tunnel. Stable local addresses remove cross-profile
 IP collisions. Translation restores each profile's canonical addresses before
 traffic reaches its engine.
 
@@ -354,6 +355,30 @@ explicit reapply or restart retries device convergence, while normal
 reconciliation retries aggregate host state. Identity changes recompile the
 existing normalized policy. Persistent shields-up uses the same outbound-only
 baseline but retains its separately ordered persistence semantics.
+
+## Cloudflare WARP engine
+
+A profile of kind `warp` runs a userspace MASQUE Connect-IP tunnel to Cloudflare
+instead of a Tailscale node. The engine owns a channel-backed device like the
+other kinds, so the aggregate mux, translation, route policy, and DNS policy
+treat it as one more isolated profile. The tunnel transport is QUIC by default,
+with a per-profile HTTP/2 option, and it leaves through the host's physical link
+rather than the default route the tunnel installs.
+
+The engine reports the tunnel addresses assigned at registration as its self
+addresses, so route policy can compute its host sources. It reports
+connection-state transitions through the same update channel as the other
+engines, reconnects after a dropped tunnel with backoff, and surfaces a stalled
+handshake as an unavailable backend state without blocking reconciliation.
+`Close` stops the tunnel and releases the device.
+
+The kind advertises `0.0.0.0/0` and `::/0` and contributes one resolver as the
+root DNS route while it holds the default route. It exposes no exit-node
+preference control, no route-acceptance control, and no local Tailscale
+backend; the supervisor treats each absence as normal for this kind. Missing
+or unusable credentials report `NeedsReRegistration` and open no tunnel. The
+kind is available on Linux in TUN mode; elsewhere its profile reports the
+platform limit while other profiles keep working.
 
 ## Reconciliation and live management
 

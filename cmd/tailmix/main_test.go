@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maisem/tailmix/controlapi"
 	"github.com/maisem/tailmix/profilesocket"
@@ -591,12 +592,14 @@ func TestCompletionSuggestsCommandsFlagsAndValues(t *testing.T) {
 		words []string
 		want  []string
 	}{
-		{name: "root commands", words: []string{""}, want: []string{"up\t", "down\t", "profiles\t", "completion\t", "--socket-dir\t"}},
+		{name: "root commands", words: []string{""}, want: []string{"up\t", "down\t", "profiles\t", "warp\t", "completion\t", "--socket-dir\t"}},
 		{name: "subcommands", words: []string{"profiles", ""}, want: []string{"list\t", "rename\t", "help\t"}},
 		{name: "update subcommands", words: []string{"update", ""}, want: []string{"status\t", "check\t", "apply\t"}},
 		{name: "wireguard subcommands", words: []string{"wireguard", ""}, want: []string{"apply\t", "show\t", "shields-up\t"}},
 		{name: "wireguard shields profile", words: []string{"wireguard", "shields-up", "w"}, want: []string{"work\tdisabled"}},
 		{name: "wireguard shields state", words: []string{"wireguard", "shields-up", "work", ""}, want: []string{"off\t", "on\t"}},
+		{name: "warp subcommands", words: []string{"warp", ""}, want: []string{"register\t"}},
+		{name: "warp register flags", words: []string{"warp", "register", "--tr"}, want: []string{"--transport\t"}},
 		{name: "long flag", words: []string{"routes", "bind", "--pro"}, want: []string{"--profile\t"}},
 		{name: "profile flag value", words: []string{"routes", "bind", "--profile", "w"}, want: []string{"work\tdisabled"}},
 		{name: "profile operand", words: []string{"profiles", "show", "h"}, want: []string{"home\trunning"}},
@@ -756,6 +759,87 @@ func TestStatusShowsActiveProfilesAndAcceptedPolicy(t *testing.T) {
 			t.Errorf("status does not contain %q:\n%s", want, stdout.String())
 		}
 	}
+}
+
+func TestProfilesListShowsWarpConnectionAndDefault(t *testing.T) {
+	client := &fakeManagementClient{statusProfiles: []controlapi.Profile{{
+		ID: "warp-id", Name: "edge", Kind: "warp", Enabled: true, RuntimeState: "running",
+		BackendState:  "Running",
+		LastConnected: time.Now().Add(-2 * time.Minute),
+		DefaultRoute:  true,
+	}}}
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies(context.Background(), []string{"profiles", "list"},
+		testDependencies(client, &stdout, &stderr, nil))
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "BACKEND") || !strings.Contains(stdout.String(), "DEFAULT") || !strings.Contains(stdout.String(), "LAST CONNECTED") {
+		t.Fatalf("profiles list headers = %q", stdout.String())
+	}
+	row := profileRow(t, stdout.String(), "edge")
+	if row[1] != "warp" || row[2] != "yes" || row[3] != "running" || row[4] != "Running" ||
+		row[5] != "yes" || row[6] != "0" || strings.Join(row[7:9], " ") != "2m ago" {
+		t.Fatalf("edge row = %q", row)
+	}
+}
+
+func TestStatusShowsWarpConnectionAndEmptyPeers(t *testing.T) {
+	client := &fakeManagementClient{status: controlapi.Status{
+		State: "up",
+		Profiles: []controlapi.Profile{{
+			ID: "warp-id", Name: "edge", Kind: "warp", Enabled: true, RuntimeState: "running",
+			BackendState:  "Running",
+			LastConnected: time.Now().Add(-3 * time.Hour),
+		}},
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies(context.Background(), []string{"status"},
+		testDependencies(client, &stdout, &stderr, nil))
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	row := profileRow(t, stdout.String(), "edge")
+	if row[1] != "warp" || row[3] != "running" || row[4] != "Running" || row[5] != "no" ||
+		row[6] != "0" || strings.Join(row[7:9], " ") != "3h ago" {
+		t.Fatalf("edge row = %q", row)
+	}
+}
+
+func TestProfilesShowWarpTunnelAddressAndConnection(t *testing.T) {
+	client := &fakeManagementClient{profile: controlapi.Profile{
+		ID: "warp-id", Name: "edge", Kind: "warp", Enabled: true,
+		SelfIPs:       []netip.Addr{netip.MustParseAddr("172.16.0.2")},
+		LastConnected: time.Now().Add(-5 * time.Minute),
+		DefaultRoute:  true,
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies(context.Background(), []string{"profiles", "show", "edge"},
+		testDependencies(client, &stdout, &stderr, nil))
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	for _, want := range []string{
+		"Tunnel address:", "172.16.0.2",
+		"Peers:", "0",
+		"Default route:", "yes",
+		"Last connected:", "5m ago",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("profiles show does not contain %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func profileRow(t *testing.T, out, name string) []string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, name+"\t") || strings.HasPrefix(line, name+" ") {
+			return strings.Fields(line)
+		}
+	}
+	t.Fatalf("no %q row in:\n%s", name, out)
+	return nil
 }
 
 func TestStatusJSONIncludesAcceptedPolicy(t *testing.T) {

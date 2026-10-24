@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/maisem/tailmix/controlapi"
 	"github.com/maisem/tailmix/exitnodeview"
@@ -378,7 +379,8 @@ func loadWarpImport(path string) (warpcfg.Config, warpcfg.Secrets, error) {
 
 func writeWarpProfile(w io.Writer, profile controlapi.WarpProfile) {
 	table := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintf(table, "PROFILE:\t%s\nKIND:\t%s\nTRANSPORT:\t%s\n", profile.Name, profile.Kind, profile.Transport)
+	fmt.Fprintf(table, "PROFILE:\t%s\nKIND:\t%s\nTRANSPORT:\t%s\nADDRESSES:\t%s\nRESOLVER:\t%s\n",
+		profile.Name, profile.Kind, profile.Transport, strings.Join(profile.Addresses, ", "), profile.Resolver)
 	_ = table.Flush()
 }
 
@@ -1434,13 +1436,32 @@ func writeJSON(w io.Writer, value any) error {
 
 func writeProfiles(w io.Writer, profiles []controlapi.Profile) {
 	table := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "PROFILE\tKIND\tENABLED\tRUNTIME\tTAILNET\tPEERS\tERROR")
+	fmt.Fprintln(table, "PROFILE\tKIND\tENABLED\tRUNTIME\tBACKEND\tDEFAULT\tPEERS\tLAST CONNECTED\tTAILNET\tERROR")
 	for _, profile := range profiles {
-		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			profile.Name, profile.Kind, yesNo(profile.Enabled), profile.RuntimeState,
-			profile.MagicDNSSuffix, profile.PeerCount, profile.LastError)
+			profile.BackendState, yesNo(profile.DefaultRoute), profile.PeerCount, formatAgo(profile.LastConnected),
+			profile.MagicDNSSuffix, profile.LastError)
 	}
 	_ = table.Flush()
+}
+
+// formatAgo renders elapsed time since when; an unset time renders empty.
+func formatAgo(when time.Time) string {
+	if when.IsZero() {
+		return ""
+	}
+	elapsed := time.Since(when)
+	switch {
+	case elapsed < time.Minute:
+		return "just now"
+	case elapsed < time.Hour:
+		return fmt.Sprintf("%dm ago", int(elapsed.Minutes()))
+	case elapsed < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(elapsed.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(elapsed.Hours()/24))
+	}
 }
 
 func writeStatus(w io.Writer, status controlapi.Status) {
@@ -1486,6 +1507,10 @@ func statusHasSearchDomains(domains controlapi.SearchDomains) bool {
 
 func writeProfile(w io.Writer, profile controlapi.Profile) {
 	table := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	addresses := make([]string, 0, len(profile.SelfIPs))
+	for _, address := range profile.SelfIPs {
+		addresses = append(addresses, address.String())
+	}
 	rows := [][2]string{
 		{"Profile", profile.Name},
 		{"Kind", profile.Kind},
@@ -1494,6 +1519,10 @@ func writeProfile(w io.Writer, profile controlapi.Profile) {
 		{"Removed", yesNo(profile.Removed)},
 		{"Runtime", profile.RuntimeState},
 		{"Backend", profile.BackendState},
+		{"Tunnel address", strings.Join(addresses, ", ")},
+		{"Peers", strconv.Itoa(profile.PeerCount)},
+		{"Default route", yesNo(profile.DefaultRoute)},
+		{"Last connected", formatAgo(profile.LastConnected)},
 		{"State directory", profile.StateDir},
 		{"Hostname", profile.Hostname},
 		{"Tailnet", profile.MagicDNSSuffix},

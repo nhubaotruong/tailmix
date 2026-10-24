@@ -51,6 +51,8 @@ type Profile struct {
 	AcceptAllDNSRoutes     bool                    `json:"acceptAllDnsRoutes"`
 	RuntimeState           string                  `json:"runtimeState"`
 	BackendState           string                  `json:"backendState,omitempty"`
+	DefaultRoute           bool                    `json:"defaultRoute"`
+	LastConnected          time.Time               `json:"lastConnected,omitzero"`
 	MagicDNSSuffix         string                  `json:"magicDnsSuffix,omitempty"`
 	SelfDNSName            string                  `json:"selfDnsName,omitempty"`
 	SelfIPs                []netip.Addr            `json:"selfIps,omitempty"`

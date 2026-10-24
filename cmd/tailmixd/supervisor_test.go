@@ -475,6 +475,37 @@ func startRunningTestProfile(t *testing.T, s *supervisor, profileID string) *lif
 	return nil
 }
 
+func TestWarpProfileProjectsConnectionAndDefault(t *testing.T) {
+	dir := t.TempDir()
+	st := warpTestState(dir)
+	st.ExitNode = &state.ExitNode{ProfileID: "p_warp"}
+	s := newWarpTestSupervisor(t, st)
+	configured := warpTestProfile(t, s.st)
+	connected := time.Now().Add(-time.Hour).Truncate(time.Second)
+	engine := &lifecycleEngine{status: tailmixprofile.Status{
+		ProfileID:     "p_warp",
+		BackendState:  "Running",
+		LastConnected: connected,
+	}}
+	s.runtimes[configured.ID] = &managedProfile{
+		runtime: runtimeProfile{State: configured, Engine: engine},
+		cancel:  func() {},
+		status:  engine.status,
+	}
+	projected := s.projectProfileLocked(configured)
+	if projected.Kind != "warp" || !projected.DefaultRoute {
+		t.Fatalf("projected = %+v", projected)
+	}
+	if !projected.LastConnected.Equal(connected) {
+		t.Fatalf("last connected = %v, want %v", projected.LastConnected, connected)
+	}
+	for _, profile := range s.st.Profiles {
+		if profile.Name == "work" && s.projectProfileLocked(profile).DefaultRoute {
+			t.Fatalf("work profile reports the WARP exit node as its default route")
+		}
+	}
+}
+
 func TestWarpProfileWithoutCredentialsReportsReRegistration(t *testing.T) {
 	dir := t.TempDir()
 	st := warpTestState(dir)

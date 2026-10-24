@@ -420,6 +420,19 @@ func completionCommandTree() *completionCommand {
 		},
 	}
 
+	warp := &completionCommand{
+		name: "warp", description: "Register a Cloudflare WARP profile", help: true,
+		subcommands: []*completionCommand{
+			leaf("register", "Register or re-register a WARP profile", []completionFlag{
+				flag("Enroll through Zero Trust with a team token file", completionFile, "--jwt-file"),
+				flag("Import a usque config.json without contacting Cloudflare", completionFile, "--config"),
+				flag("Resolver for the profile", completionFreeValue, "--dns"),
+				flag("quic or http2", completionFreeValue, "--transport"),
+				jsonFlag(),
+			}, completionProfile),
+		},
+	}
+
 	completion := &completionCommand{
 		name: "completion", description: "Generate shell completion scripts", help: true,
 		subcommands: []*completionCommand{
@@ -454,6 +467,7 @@ func completionCommandTree() *completionCommand {
 			exitNode,
 			dns,
 			wireguard,
+			warp,
 			tailscaleCompletionCommand("tailscale", "Run an upstream Tailscale command for one profile", profileFlag()),
 			tailscaleCompletionCommand("ts", "Shortcut for tailscale", profileFlag()),
 			completion,

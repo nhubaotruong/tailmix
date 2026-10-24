@@ -31,7 +31,10 @@ func TestWarpRegisterRefusesWithoutTermsConsent(t *testing.T) {
 }
 
 func TestWarpRegisterStoresRegistrationRequest(t *testing.T) {
-	client := &fakeManagementClient{warpProfile: controlapi.WarpProfile{Name: "cloudflare", Kind: "warp", Transport: "http2"}}
+	client := &fakeManagementClient{warpProfile: controlapi.WarpProfile{
+		Name: "cloudflare", Kind: "warp", Transport: "http2",
+		Addresses: []string{"172.16.0.2"},
+	}}
 	var stdout, stderr bytes.Buffer
 	deps := testDependencies(client, &stdout, &stderr, nil)
 	deps.stdin = strings.NewReader("yes\n")
@@ -48,7 +51,7 @@ func TestWarpRegisterStoresRegistrationRequest(t *testing.T) {
 	if request.DNS != "9.9.9.9" || !request.UseHTTP2 {
 		t.Fatalf("request = %+v", request)
 	}
-	for _, want := range []string{"cloudflare", "warp", "http2"} {
+	for _, want := range []string{"cloudflare", "warp", "http2", "ADDRESSES:", "172.16.0.2"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("output = %q, missing %q", stdout.String(), want)
 		}

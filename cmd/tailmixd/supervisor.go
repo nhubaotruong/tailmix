@@ -915,6 +915,8 @@ func (s *supervisor) projectProfileLocked(configured state.Profile) controlapi.P
 		}
 		status := managed.status
 		result.BackendState = status.BackendState
+		result.LastConnected = status.LastConnected
+		result.DefaultRoute = s.st.ExitNode != nil && s.st.ExitNode.ProfileID == configured.ID
 		result.MagicDNSSuffix = status.MagicDNSSuffix
 		result.SelfDNSName = status.SelfDNSName
 		result.SelfIPs = append([]netip.Addr(nil), status.SelfIPs...)
