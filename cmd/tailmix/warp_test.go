@@ -125,6 +125,53 @@ func TestWarpRegisterImportsConfigWithoutConsent(t *testing.T) {
 	}
 }
 
+func TestWarpRegisterReadsTeamTokenFromStdin(t *testing.T) {
+	client := &fakeManagementClient{}
+	var stdout, stderr bytes.Buffer
+	deps := testDependencies(client, &stdout, &stderr, nil)
+	deps.stdin = strings.NewReader("team-token\ny\n")
+
+	code := runWithDependencies(context.Background(), []string{"warp", "register", "cloudflare", "--jwt", "-"}, deps)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if client.warpRequest.Register == nil || client.warpRequest.Register.JWT != "team-token" {
+		t.Fatalf("request = %+v", client.warpRequest)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "team-token") {
+		t.Fatalf("output leaked the team token: %q %q", stdout.String(), stderr.String())
+	}
+}
+
+func TestWarpRegisterRejectsTeamTokenInStdinWithoutConsent(t *testing.T) {
+	client := &fakeManagementClient{}
+	var stdout, stderr bytes.Buffer
+	deps := testDependencies(client, &stdout, &stderr, nil)
+	deps.stdin = strings.NewReader("team-token\nn\n")
+
+	code := runWithDependencies(context.Background(), []string{"warp", "register", "cloudflare", "--jwt", "-"}, deps)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if client.warpCalls != 0 {
+		t.Fatalf("apply calls = %d, want 0", client.warpCalls)
+	}
+}
+
+func TestWarpRegisterRejectsInlineTeamToken(t *testing.T) {
+	client := &fakeManagementClient{}
+	var stdout, stderr bytes.Buffer
+	code := runWithDependencies(context.Background(),
+		[]string{"warp", "register", "cloudflare", "--jwt", "team-token"},
+		testDependencies(client, &stdout, &stderr, nil))
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if client.warpCalls != 0 {
+		t.Fatalf("apply calls = %d, want 0", client.warpCalls)
+	}
+}
+
 func TestWarpRegisterRejectsTwoCredentialSources(t *testing.T) {
 	client := &fakeManagementClient{}
 	var stdout, stderr bytes.Buffer

@@ -250,9 +250,16 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 		return usageError{fmt.Sprintf("unknown warp command %q", args[0])}
 	}
 	rest := args[1:]
-	jwtFile, jwtFound, err := takeString(&rest, "--jwt-file")
+	jwtFile, jwtFileFound, err := takeString(&rest, "--jwt-file")
 	if err != nil {
 		return err
+	}
+	jwtSource, jwtFound, err := takeString(&rest, "--jwt")
+	if err != nil {
+		return err
+	}
+	if jwtFound && jwtSource != "-" {
+		return usageError{"--jwt takes no value: use --jwt - to read the token from stdin or --jwt-file <path>"}
 	}
 	configPath, configFound, err := takeString(&rest, "--config")
 	if err != nil {
@@ -270,8 +277,14 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 	if err != nil {
 		return err
 	}
-	if jwtFound && configFound {
-		return usageError{"warp register accepts --jwt-file or --config, not both"}
+	sources := 0
+	for _, found := range []bool{jwtFileFound, jwtFound, configFound} {
+		if found {
+			sources++
+		}
+	}
+	if sources > 1 {
+		return usageError{"warp register accepts one of --jwt, --jwt-file, or --config"}
 	}
 	if transportFound && transport != "quic" && transport != "http2" {
 		return usageError{"--transport must be quic or http2"}
@@ -288,15 +301,28 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 			request.UseHTTP2 = config.UseHTTP2
 		}
 		request.Config, request.Secrets = &config, &secrets
-	case jwtFound:
-		teamToken, err := os.ReadFile(jwtFile)
+	case jwtFileFound:
+		raw, err := os.ReadFile(jwtFile)
 		if err != nil {
 			return fmt.Errorf("read team token file: %w", err)
+		}
+		teamToken, err := warpTeamToken(raw)
+		if err != nil {
+			return err
 		}
 		if !confirmWarpTerms(deps) {
 			return errors.New("WARP registration requires Terms of Service consent")
 		}
-		request.Register = &controlapi.WarpRegisterRequest{JWT: strings.TrimSpace(string(teamToken))}
+		request.Register = &controlapi.WarpRegisterRequest{JWT: teamToken}
+	case jwtFound:
+		teamToken, err := readWarpTeamToken(deps.stdin)
+		if err != nil {
+			return err
+		}
+		if !confirmWarpTerms(deps) {
+			return errors.New("WARP registration requires Terms of Service consent")
+		}
+		request.Register = &controlapi.WarpRegisterRequest{JWT: teamToken}
 	default:
 		if !confirmWarpTerms(deps) {
 			return errors.New("WARP registration requires Terms of Service consent")
@@ -313,6 +339,41 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 		fmt.Fprintf(deps.stderr, "Delete %s once the profile starts; it contains the private key.\n", configPath)
 	}
 	return nil
+}
+
+// readWarpTeamToken takes the first line of standard input so a Zero Trust
+// token never reaches the argument list or a file on disk. It reads byte by
+// byte because the Terms of Service answer follows on the same stream.
+func readWarpTeamToken(r io.Reader) (string, error) {
+	var line []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if buf[0] == '\n' {
+				break
+			}
+			if len(line) >= 4096 {
+				return "", errors.New("team token is too long")
+			}
+			line = append(line, buf[0])
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return "", fmt.Errorf("read team token: %w", err)
+		}
+	}
+	return warpTeamToken(line)
+}
+
+func warpTeamToken(raw []byte) (string, error) {
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", errors.New("team token is empty")
+	}
+	return token, nil
 }
 
 func confirmWarpTerms(deps dependencies) bool {
@@ -1833,13 +1894,16 @@ const warpHelp = `Usage:
 Register or import a Cloudflare WARP profile and start it in one command.
 
 Flags:
+  --jwt -             Read the Zero Trust team token from standard input
   --jwt-file <path>   Enroll through Zero Trust with a team token file
   --config <path>     Import a usque config.json without contacting Cloudflare
   --dns <address>     Resolver for the profile (default 1.1.1.1)
   --transport <kind>  quic (default) or http2
 
 Registration asks for Terms of Service consent on this terminal before it calls
-the daemon. Delete an imported configuration file once the profile starts.
+the daemon. With --jwt -, the token is the first line of input and the consent
+answer follows, so pipe both: printf 'token\ny\n' | tailmix warp register ...
+Delete an imported configuration file once the profile starts.
 `
 
 const versionHelp = `Usage:

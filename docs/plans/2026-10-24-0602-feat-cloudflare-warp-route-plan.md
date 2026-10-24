@@ -42,7 +42,7 @@ A tailnet exit node sends everything to a network you own. Cloudflare WARP sends
 
 - R1. WARP is a profile kind named `warp`, stored in `state.json` beside tailscale and wireguard profiles and listed by every command that lists profiles.
 - R2. `tailmix warp register <name>` creates a WARP profile, registers it with Cloudflare, and starts it in one command. The command takes Terms of Service consent on the terminal before the daemon performs the enrollment call, which needs no prompt.
-- R3. `tailmix warp register <name> --jwt-file <path>` enrolls through ZeroTrust instead of a consumer registration, reading the team token from the file so it never appears in the argument list.
+- R3. `tailmix warp register <name> --jwt-file <path>` enrolls through ZeroTrust instead of a consumer registration, reading the team token from the file so it never appears in the argument list. `--jwt -` reads the same token from standard input for operators who will not leave it on disk.
 - R4. `tailmix warp register <name> --config <path>` creates the profile from a `config.json` written by the usque CLI, without contacting Cloudflare. The file must carry the MASQUE fields and both tunnel addresses, and the operator stops any other WARP client before the profile starts.
 - R5. A WARP profile is enabled, disabled, renamed, aliased and removed through the existing profile commands, with no WARP-specific variant.
 - R6. Removing a WARP profile follows the existing removal semantics: a plain removal keeps its credentials and state directory, and a purge deletes them. Deleting them does not revoke the Cloudflare registration.

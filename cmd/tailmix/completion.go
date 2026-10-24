@@ -424,6 +424,7 @@ func completionCommandTree() *completionCommand {
 		name: "warp", description: "Register a Cloudflare WARP profile", help: true,
 		subcommands: []*completionCommand{
 			leaf("register", "Register or re-register a WARP profile", []completionFlag{
+				flag("Enroll through Zero Trust with a team token on stdin", completionFreeValue, "--jwt"),
 				flag("Enroll through Zero Trust with a team token file", completionFile, "--jwt-file"),
 				flag("Import a usque config.json without contacting Cloudflare", completionFile, "--config"),
 				flag("Resolver for the profile", completionFreeValue, "--dns"),

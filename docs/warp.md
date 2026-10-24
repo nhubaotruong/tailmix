@@ -31,6 +31,17 @@ sudo tailmix warp register corp --jwt-file ./team.jwt
 The token is read from the file so it never appears in the argument list.
 Registration, the profile write, and the first start happen in one request.
 
+Pipe the token instead when you do not want it on disk. The token is the first
+line of input and the consent answer follows it:
+
+```sh
+printf '%s\ny\n' "$TEAM_TOKEN" | sudo tailmix warp register corp --jwt -
+```
+
+`--jwt` accepts only `-`, which reads standard input. A token passed as an
+argument is refused, because the process table and the shell history would keep
+it.
+
 ## Import a configuration
 
 An existing `config.json` written by the usque CLI can become a profile without
