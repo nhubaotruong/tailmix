@@ -254,3 +254,102 @@ func TestBuildDNSListsDetectedSearchDomainsByProfile(t *testing.T) {
 		t.Fatalf("second available search domain = %+v", got)
 	}
 }
+
+func TestWarpExitNodeOwnsRootDNSInEveryState(t *testing.T) {
+	st := state.State{
+		Profiles: []state.Profile{{ID: "warp-id", Name: "warp", Kind: state.ProfileKindWarp}},
+		ExitNode: &state.ExitNode{ProfileID: "warp-id"},
+	}
+	for name, statuses := range map[string][]profile.Status{
+		"running": {{ProfileID: "warp-id", Kind: state.ProfileKindWarp, BackendState: "Running", ExitNodeID: "registration"}},
+		"disconnected": {{
+			ProfileID: "warp-id", Kind: state.ProfileKindWarp, BackendState: "Unavailable", ExitNodeID: "registration",
+		}},
+		"stopped": nil,
+	} {
+		plan := BuildDNS(st, statuses)
+		resolved, ok := plan.Resolve("example.com")
+		if !ok || !resolved.Active || resolved.ProfileID != "warp-id" ||
+			resolved.Source != "exit-node" || !resolved.ProfileDNS {
+			t.Fatalf("%s: warp root DNS route = %+v, %v", name, resolved, ok)
+		}
+	}
+}
+
+func TestWarpRootDoesNotOutrankTailnetSuffix(t *testing.T) {
+	st := state.State{
+		Profiles: []state.Profile{
+			{ID: "corp-id", Name: "corp"},
+			{ID: "warp-id", Name: "warp", Kind: state.ProfileKindWarp},
+		},
+		ExitNode: &state.ExitNode{ProfileID: "warp-id"},
+	}
+	plan := BuildDNS(st, []profile.Status{
+		{ProfileID: "corp-id", BackendState: "Running", MagicDNSSuffix: "corp.example"},
+		{ProfileID: "warp-id", Kind: state.ProfileKindWarp, BackendState: "Running", ExitNodeID: "registration"},
+	})
+	if got, ok := plan.Resolve("host.corp.example"); !ok || got.ProfileID != "corp-id" {
+		t.Fatalf("corp.example resolved to %+v, %v", got, ok)
+	}
+	if got, ok := plan.Resolve("example.com"); !ok || got.ProfileID != "warp-id" || !got.ProfileDNS {
+		t.Fatalf("example.com resolved to %+v, %v", got, ok)
+	}
+}
+
+func TestWarpDefaultRouteCoversExplicitBinding(t *testing.T) {
+	st := state.State{
+		Profiles: []state.Profile{
+			{ID: "warp-id", Name: "warp", Kind: state.ProfileKindWarp},
+			{ID: "corp-id", Name: "corp"},
+		},
+		IPRouteBindings: []state.IPRouteBinding{
+			{ProfileID: "warp-id", Prefix: netip.MustParsePrefix("0.0.0.0/0")},
+			{ProfileID: "warp-id", Prefix: netip.MustParsePrefix("::/0")},
+			{ProfileID: "corp-id", Prefix: netip.MustParsePrefix("0.0.0.0/0")},
+		},
+	}
+	warpDefault := profile.RouteStatus{Prefix: netip.MustParsePrefix("0.0.0.0/0")}
+	warpDefault6 := profile.RouteStatus{Prefix: netip.MustParsePrefix("::/0")}
+	plan := BuildIP(st, []profile.Status{{
+		ProfileID: "warp-id", Kind: state.ProfileKindWarp, BackendState: "Running",
+		SelfIPs:         []netip.Addr{netip.MustParseAddr("172.16.0.2")},
+		AvailableRoutes: []profile.RouteStatus{warpDefault, warpDefault6},
+	}, {
+		ProfileID: "corp-id", BackendState: "Running",
+		SelfIPs:         []netip.Addr{netip.MustParseAddr("100.64.0.10")},
+		AvailableRoutes: []profile.RouteStatus{{Prefix: netip.MustParsePrefix("0.0.0.0/0")}},
+	}})
+	byProfile := map[string]IPEntry{}
+	for _, entry := range plan.Exact {
+		byProfile[entry.ProfileID+"/"+entry.Prefix.String()] = entry
+	}
+	if got := byProfile["warp-id/0.0.0.0/0"]; !got.Active || got.CoveringRoute != warpDefault.Prefix {
+		t.Fatalf("warp IPv4 default binding = %+v", got)
+	}
+	if got := byProfile["warp-id/::/0"]; got.Active || got.Reason != "route_not_advertised" {
+		t.Fatalf("warp IPv6 default binding without an IPv6 tunnel = %+v", got)
+	}
+	if got := byProfile["corp-id/0.0.0.0/0"]; got.Active || got.Reason != "host_route_conflict" {
+		t.Fatalf("tailnet IPv4 default binding = %+v", got)
+	}
+}
+
+func TestWarpAdvertisementIsNotAnAcceptAllImport(t *testing.T) {
+	st := state.State{Profiles: []state.Profile{{
+		ID: "warp-id", Name: "warp", Kind: state.ProfileKindWarp, AcceptAllRoutes: true,
+	}}}
+	plan := BuildIP(st, []profile.Status{{
+		ProfileID: "warp-id", Kind: state.ProfileKindWarp, BackendState: "Running",
+		SelfIPs: []netip.Addr{netip.MustParseAddr("172.16.0.2")},
+		AvailableRoutes: []profile.RouteStatus{
+			{Prefix: netip.MustParsePrefix("0.0.0.0/0")},
+			{Prefix: netip.MustParsePrefix("::/0")},
+		},
+	}})
+	if len(plan.Imported) != 0 {
+		t.Fatalf("warp default became an accept-all import: %+v", plan.Imported)
+	}
+	if len(plan.Resource.Available) != 0 {
+		t.Fatalf("warp default listed as a bindable route: %+v", plan.Resource.Available)
+	}
+}

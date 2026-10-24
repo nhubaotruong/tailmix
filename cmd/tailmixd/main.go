@@ -1008,7 +1008,7 @@ func tunConfigWithPolicy(st state.State, statuses []tailmixprofile.Status, lease
 		})
 	}
 	for _, entry := range policy.Exact {
-		if routeOverlapsReserved(st, entry.Prefix) {
+		if !routingpolicy.IsWarpDefaultBinding(st, entry.ProfileID, entry.Prefix) && routeOverlapsReserved(st, entry.Prefix) {
 			return packetmap.Table{}, hosttun.Config{}, fmt.Errorf("bound route %v overlaps a tailmix reserved range", entry.Prefix)
 		}
 		table.ExactRoutes.Insert(entry.Prefix, packetmap.SubnetRoute{ProfileID: entry.ProfileID, Active: entry.Active})
@@ -1033,6 +1033,26 @@ func tunConfigWithPolicy(st state.State, statuses []tailmixprofile.Status, lease
 				Destination: entry.Prefix,
 				Source:      natIPFor(st, entry.Prefix.Addr()),
 			})
+		}
+	}
+	if st.ExitNode != nil && routingpolicy.IsWarpProfile(st, st.ExitNode.ProfileID) {
+		// A stopped or disconnected engine reports no self address, so seed
+		// the exit source from the stored tunnel addresses and keep the
+		// defaults installed, failing closed.
+		for _, configured := range st.Profiles {
+			if configured.ID != st.ExitNode.ProfileID || configured.Warp == nil {
+				continue
+			}
+			for _, ip := range []netip.Addr{configured.Warp.IPv4, configured.Warp.IPv6} {
+				if !ip.IsValid() {
+					continue
+				}
+				key := packetmap.SourceKey{ProfileID: configured.ID, IPv6: ip.Is6()}
+				if _, ok := table.Sources[key]; ok {
+					continue
+				}
+				table.Sources[key] = packetmap.Source{HostIP: natIPFor(st, ip), CanonicalIP: ip}
+			}
 		}
 	}
 	if exitProfileID := activeExitProfile(st, statuses); exitProfileID != "" {
@@ -1105,6 +1125,12 @@ func tunConfigWithPolicy(st state.State, statuses []tailmixprofile.Status, lease
 func activeExitProfile(st state.State, statuses []tailmixprofile.Status) string {
 	if st.ExitNode == nil {
 		return ""
+	}
+	// A WARP selection matches on the profile alone and owns the default in
+	// every connection state, so a stopped profile still routes into a dead
+	// tunnel and drops instead of leaking to the physical default.
+	if routingpolicy.IsWarpProfile(st, st.ExitNode.ProfileID) {
+		return st.ExitNode.ProfileID
 	}
 	for _, status := range statuses {
 		if status.ProfileID == st.ExitNode.ProfileID &&

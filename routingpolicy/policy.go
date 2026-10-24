@@ -91,7 +91,7 @@ func BuildIP(st state.State, statuses []profile.Status) IPPlan {
 		case !exists || configured.Removed || configured.Disabled || !active:
 			entry.Reason = "profile_unavailable"
 		default:
-			cover, ok := coveringIPRoute(entry.Prefix, status.AvailableRoutes)
+			cover, ok := coveringIPRoute(entry.Prefix, status)
 			if !ok {
 				entry.Reason = "route_not_advertised"
 			} else {
@@ -100,7 +100,7 @@ func BuildIP(st state.State, statuses []profile.Status) IPPlan {
 				entry.PrimaryRouter = cover.PrimaryRouter
 			}
 		}
-		if routeOverlapsReserved(st, entry.Prefix) {
+		if !IsWarpDefaultBinding(st, entry.ProfileID, entry.Prefix) && routeOverlapsReserved(st, entry.Prefix) {
 			entry.Active = false
 			entry.Reason = "host_route_conflict"
 		}
@@ -393,9 +393,34 @@ func BuildDNS(st state.State, statuses []profile.Status) DNSPlan {
 	return plan
 }
 
+// IsWarpProfile reports a configured WARP profile by ID. A WARP exit selection
+// matches on the profile alone: it activates without a registration ID and in
+// every connection state.
+func IsWarpProfile(st state.State, profileID string) bool {
+	for _, configured := range st.Profiles {
+		if configured.ID == profileID && configured.Kind == state.ProfileKindWarp {
+			return true
+		}
+	}
+	return false
+}
+
+// IsWarpDefaultBinding reports a zero-length binding of a WARP profile. WARP
+// advertises the whole internet, so this binding must pass the reserved-range
+// check that rejects every other profile.
+func IsWarpDefaultBinding(st state.State, profileID string, prefix netip.Prefix) bool {
+	return prefix.Bits() == 0 && IsWarpProfile(st, profileID)
+}
+
 func activeDNSExitProfile(st state.State, statuses []profile.Status) string {
 	if st.ExitNode == nil {
 		return ""
+	}
+	// A WARP selection keeps its root route in every connection state, so
+	// lookups fail closed inside the tunnel instead of escaping to the
+	// physical resolver.
+	if IsWarpProfile(st, st.ExitNode.ProfileID) {
+		return st.ExitNode.ProfileID
 	}
 	for _, status := range statuses {
 		if status.ProfileID == st.ExitNode.ProfileID &&
@@ -436,14 +461,19 @@ func (p DNSPlan) Resolve(domain string) (DNSEntry, bool) {
 	return best, bestLength >= 0
 }
 
-func coveringIPRoute(prefix netip.Prefix, routes []profile.RouteStatus) (profile.RouteStatus, bool) {
+func coveringIPRoute(prefix netip.Prefix, status profile.Status) (profile.RouteStatus, bool) {
 	var best profile.RouteStatus
 	found := false
-	for _, route := range routes {
+	for _, route := range status.AvailableRoutes {
 		candidate := route.Prefix.Masked()
-		if !candidate.IsValid() || candidate.Bits() == 0 ||
+		if !candidate.IsValid() ||
 			candidate.Addr().BitLen() != prefix.Addr().BitLen() ||
 			!candidate.Contains(prefix.Addr()) || candidate.Bits() > prefix.Bits() {
+			continue
+		}
+		// A zero-length advertisement covers an explicit binding only in a
+		// family the advertiser has an address in.
+		if candidate.Bits() == 0 && !advertisesFamily(status, prefix) {
 			continue
 		}
 		if !found || candidate.Bits() > best.Prefix.Bits() {
@@ -453,6 +483,15 @@ func coveringIPRoute(prefix netip.Prefix, routes []profile.RouteStatus) (profile
 		}
 	}
 	return best, found
+}
+
+func advertisesFamily(status profile.Status, prefix netip.Prefix) bool {
+	for _, ip := range status.SelfIPs {
+		if ip.Is6() == prefix.Addr().Is6() {
+			return true
+		}
+	}
+	return false
 }
 
 func routeOverlapsReserved(st state.State, prefix netip.Prefix) bool {

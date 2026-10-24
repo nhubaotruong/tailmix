@@ -14,6 +14,7 @@ import (
 	tailmixprofile "github.com/maisem/tailmix/profile"
 	"github.com/maisem/tailmix/state"
 	tailmixversion "github.com/maisem/tailmix/version"
+	"github.com/maisem/tailmix/warpcfg"
 	"tailscale.com/net/packet"
 	"tailscale.com/types/dnstype"
 )
@@ -889,6 +890,188 @@ func TestTUNPlanInstallsSelectedExitNodeDefaults(t *testing.T) {
 	}
 	if len(plan.DNSConfig.Routes) != 0 {
 		t.Fatalf("exit-node DNS route installed before profile preference applied: %+v", plan.DNSConfig.Routes)
+	}
+}
+
+func TestTUNPlanKeepsStoppedWarpDefaultsFromStoredAddresses(t *testing.T) {
+	st := state.State{
+		SyntheticPool:   "10.250.0.0/16",
+		SyntheticPoolV6: "fd6d:6e65:7400::/120",
+		Profiles:        []state.Profile{warpProfile()},
+		ExitNode:        &state.ExitNode{ProfileID: "warp"},
+	}
+	// A stopped engine reports no status at all.
+	plan, err := buildTUNPlan(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/1"),
+		netip.MustParsePrefix("128.0.0.0/1"),
+		netip.MustParsePrefix("::/1"),
+		netip.MustParsePrefix("8000::/1"),
+	} {
+		found := false
+		for _, route := range plan.HostConfig.Routes {
+			if route.Destination != prefix {
+				continue
+			}
+			found = true
+			if !route.Exit {
+				t.Fatalf("route %v is not an exit route: %+v", prefix, route)
+			}
+			if want := natIPFor(plan.State, prefix.Addr()); route.Source != want {
+				t.Fatalf("exit route %v source = %v, want shared NAT %v", prefix, route.Source, want)
+			}
+		}
+		if !found {
+			t.Fatalf("stopped warp profile lost exit route %v: %+v", prefix, plan.HostConfig.Routes)
+		}
+	}
+	for _, ip := range []netip.Addr{
+		netip.MustParseAddr("203.0.113.10"),
+		netip.MustParseAddr("2001:db8::10"),
+	} {
+		route, ok := plan.Table.ExitRoutes.Lookup(ip)
+		if !ok || !route.Active || route.ProfileID != "warp" {
+			t.Fatalf("exit route for %v = %+v, %v", ip, route, ok)
+		}
+	}
+	if len(plan.DNSConfig.Routes) != 1 ||
+		plan.DNSConfig.Routes[0].Suffix != "." ||
+		plan.DNSConfig.Routes[0].ProfileID != "warp" ||
+		!plan.DNSConfig.Routes[0].ProfileDNS {
+		t.Fatalf("stopped warp DNS routes = %+v", plan.DNSConfig.Routes)
+	}
+}
+
+func TestTUNPlanSendsPublicTrafficToSelectedWarp(t *testing.T) {
+	st := state.State{
+		SyntheticPool:   "100.127.0.0/24",
+		SyntheticPoolV6: "fd6d:6e65:7400::/56",
+		Profiles:        []state.Profile{warpProfile(), {ID: "corp", Name: "corp"}},
+		ExitNode:        &state.ExitNode{ProfileID: "warp"},
+		IPRouteBindings: []state.IPRouteBinding{{
+			ProfileID: "corp", Prefix: netip.MustParsePrefix("10.0.0.0/8"),
+		}},
+	}
+	plan, err := buildTUNPlan(st, []tailmixprofile.Status{{
+		ProfileID: "warp", Kind: state.ProfileKindWarp, BackendState: "Running", ExitNodeID: "registration",
+		SelfIPs: []netip.Addr{
+			netip.MustParseAddr("172.16.0.2"),
+			netip.MustParseAddr("2606:4700:110:8a36::2"),
+		},
+	}, {
+		ProfileID: "corp", BackendState: "Running",
+		SelfIPs:         []netip.Addr{netip.MustParseAddr("100.64.0.10")},
+		AvailableRoutes: []tailmixprofile.RouteStatus{{Prefix: netip.MustParsePrefix("10.0.0.0/8")}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		dst  netip.Addr
+		want string
+	}{
+		{netip.MustParseAddr("10.1.2.3"), "corp"},
+		{netip.MustParseAddr("203.0.113.10"), "warp"},
+	} {
+		pkt := packet.Generate(packet.UDP4Header{
+			IP4Header: packet.IP4Header{Src: natIPFor(plan.State, tc.dst), Dst: tc.dst},
+			SrcPort:   1234, DstPort: 80,
+		}, nil)
+		if _, route, err := packetmap.New(plan.Table).Outbound(pkt); err != nil || route.ProfileID != tc.want {
+			t.Fatalf("%v routed to %+v, %v; want %q", tc.dst, route, err, tc.want)
+		}
+	}
+}
+
+func TestTUNPlanAcceptsWarpDefaultBinding(t *testing.T) {
+	st := state.State{
+		SyntheticPool:   "10.250.0.0/16",
+		SyntheticPoolV6: "fd6d:6e65:7400::/120",
+		Profiles:        []state.Profile{warpProfile()},
+		IPRouteBindings: []state.IPRouteBinding{{
+			ProfileID: "warp", Prefix: netip.MustParsePrefix("0.0.0.0/0"),
+		}},
+	}
+	plan, err := buildTUNPlan(st, []tailmixprofile.Status{{
+		ProfileID: "warp", Kind: state.ProfileKindWarp, BackendState: "Running", ExitNodeID: "registration",
+		SelfIPs: []netip.Addr{
+			netip.MustParseAddr("172.16.0.2"),
+			netip.MustParseAddr("2606:4700:110:8a36::2"),
+		},
+		AvailableRoutes: []tailmixprofile.RouteStatus{{Prefix: netip.MustParsePrefix("0.0.0.0/0")}},
+	}})
+	if err != nil {
+		t.Fatalf("warp default binding rejected: %v", err)
+	}
+	route, ok := plan.Table.ExactRoutes.Lookup(netip.MustParseAddr("203.0.113.10"))
+	if !ok || !route.Active || route.ProfileID != "warp" {
+		t.Fatalf("bound warp default = %+v, %v", route, ok)
+	}
+}
+
+func TestTUNPlanReconcilesIPv4OnlyWarpWithIPv6DefaultBinding(t *testing.T) {
+	warp := warpProfile()
+	warp.Warp = &warpcfg.Config{IPv4: netip.MustParseAddr("172.16.0.2")}
+	st := state.State{
+		SyntheticPool:   "100.127.0.0/24",
+		SyntheticPoolV6: "fd6d:6e65:7400::/56",
+		Profiles:        []state.Profile{warp, {ID: "corp", Name: "corp"}},
+		IPRouteBindings: []state.IPRouteBinding{
+			{ProfileID: "warp", Prefix: netip.MustParsePrefix("::/0")},
+			{ProfileID: "corp", Prefix: netip.MustParsePrefix("10.0.0.0/8")},
+		},
+	}
+	plan, err := buildTUNPlan(st, []tailmixprofile.Status{{
+		ProfileID: "warp", Kind: state.ProfileKindWarp, BackendState: "Running", ExitNodeID: "registration",
+		SelfIPs:         []netip.Addr{netip.MustParseAddr("172.16.0.2")},
+		AvailableRoutes: []tailmixprofile.RouteStatus{{Prefix: netip.MustParsePrefix("0.0.0.0/0")}, {Prefix: netip.MustParsePrefix("::/0")}},
+	}, {
+		ProfileID: "corp", BackendState: "Running",
+		SelfIPs:         []netip.Addr{netip.MustParseAddr("100.64.0.10")},
+		AvailableRoutes: []tailmixprofile.RouteStatus{{Prefix: netip.MustParsePrefix("10.0.0.0/8")}},
+	}})
+	if err != nil {
+		t.Fatalf("IPv4-only warp with an IPv6 default binding failed to reconcile: %v", err)
+	}
+	if route, ok := plan.Table.ExactRoutes.Lookup(netip.MustParseAddr("2001:db8::10")); !ok || route.Active || route.ProfileID != "warp" {
+		t.Fatalf("IPv6 default binding on an IPv4-only tunnel = %+v, %v", route, ok)
+	}
+	if route, ok := plan.Table.ExactRoutes.Lookup(netip.MustParseAddr("10.1.2.3")); !ok || !route.Active || route.ProfileID != "corp" {
+		t.Fatalf("corp route after IPv6 warp binding = %+v, %v", route, ok)
+	}
+}
+
+func TestTUNPlanRejectsTailnetDefaultBinding(t *testing.T) {
+	st := state.State{
+		SyntheticPool:   "10.250.0.0/16",
+		SyntheticPoolV6: "fd6d:6e65:7400::/120",
+		Profiles:        []state.Profile{{ID: "corp", Name: "corp"}},
+		IPRouteBindings: []state.IPRouteBinding{{
+			ProfileID: "corp", Prefix: netip.MustParsePrefix("0.0.0.0/0"),
+		}},
+	}
+	// The tailnet status must advertise the default for the table check to
+	// see a bound route at all.
+	_, err := buildTUNPlan(st, []tailmixprofile.Status{{
+		ProfileID: "corp", BackendState: "Running",
+		SelfIPs:         []netip.Addr{netip.MustParseAddr("100.64.0.10")},
+		AvailableRoutes: []tailmixprofile.RouteStatus{{Prefix: netip.MustParsePrefix("0.0.0.0/0")}},
+	}})
+	if err == nil {
+		t.Fatal("tailnet default binding passed the reserved-range check")
+	}
+}
+
+func warpProfile() state.Profile {
+	return state.Profile{
+		ID: "warp", Name: "warp", Kind: state.ProfileKindWarp,
+		Warp: &warpcfg.Config{
+			IPv4: netip.MustParseAddr("172.16.0.2"),
+			IPv6: netip.MustParseAddr("2606:4700:110:8a36::2"),
+		},
 	}
 }
 
