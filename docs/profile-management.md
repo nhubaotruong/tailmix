@@ -809,7 +809,9 @@ An accept-all or automatic row shadowed completely by a higher policy tier uses
 `state: "overridden"` and reports `overriddenBy`, `overrideProfileId`, and
 `overrideProfileName`. A partially shadowed row remains installed and reports
 `reason: "partially_overridden"`. Identical accept-all imports from different
-profiles remain waiting with `reason: "ambiguous_route"`. Route and search
+profiles share the same resolvers and install from the first configured profile.
+Imports that disagree on resolvers remain waiting with
+`reason: "ambiguous_route"`. Route and search
 resources also expose `reconcileError` when persisted desired state could not
 be fully applied to the live aggregate.
 

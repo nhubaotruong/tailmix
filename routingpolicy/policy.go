@@ -282,6 +282,7 @@ func BuildDNS(st state.State, statuses []profile.Status) DNSPlan {
 		plan.Resource.AcceptAllProfiles = append(plan.Resource.AcceptAllProfiles, accept)
 	}
 	for domain, candidates := range importCandidates {
+		candidates = coalesceDNSCandidates(candidates)
 		if len(candidates) == 1 {
 			plan.Imported = append(plan.Imported, candidates[0])
 			plan.Resource.Imported = append(plan.Resource.Imported, dnsResource(candidates[0], names))
@@ -328,6 +329,7 @@ func BuildDNS(st state.State, statuses []profile.Status) DNSPlan {
 		}}
 	}
 	for domain, candidates := range automaticCandidates {
+		candidates = coalesceDNSCandidates(candidates)
 		if len(candidates) == 1 {
 			plan.Automatic = append(plan.Automatic, candidates[0])
 			plan.Resource.Automatic = append(plan.Resource.Automatic, dnsResource(candidates[0], names))
@@ -594,6 +596,36 @@ func addDNSCandidate(candidates []DNSEntry, entry DNSEntry) []DNSEntry {
 		return candidates
 	}
 	return append(candidates, entry)
+}
+
+// coalesceDNSCandidates keeps one candidate when every profile advertises the
+// domain with the same resolvers. Such routes answer identically, so the first
+// configured profile wins instead of leaving the domain unrouted.
+func coalesceDNSCandidates(candidates []DNSEntry) []DNSEntry {
+	if len(candidates) < 2 {
+		return candidates
+	}
+	key := dnsResolverKey(candidates[0])
+	if key == "" {
+		return candidates
+	}
+	for _, candidate := range candidates[1:] {
+		if dnsResolverKey(candidate) != key {
+			return candidates
+		}
+	}
+	return candidates[:1]
+}
+
+func dnsResolverKey(entry DNSEntry) string {
+	addrs := make([]string, 0, len(entry.Resolvers))
+	for _, resolver := range entry.Resolvers {
+		if resolver != nil {
+			addrs = append(addrs, resolver.Addr)
+		}
+	}
+	sort.Strings(addrs)
+	return strings.Join(addrs, " ")
 }
 
 func dnsSourcePriority(source string) int {

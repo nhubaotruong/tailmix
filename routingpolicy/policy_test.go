@@ -353,3 +353,53 @@ func TestWarpAdvertisementIsNotAnAcceptAllImport(t *testing.T) {
 		t.Fatalf("warp default listed as a bindable route: %+v", plan.Resource.Available)
 	}
 }
+
+func TestAcceptAllDuplicateRoutesWithSameResolversAreNotAmbiguous(t *testing.T) {
+	st := state.State{Profiles: []state.Profile{
+		{ID: "personal-id", Name: "personal", AcceptAllDNSRoutes: true},
+		{ID: "work-id", Name: "work", AcceptAllDNSRoutes: true},
+	}}
+	statuses := []profile.Status{
+		{ProfileID: "personal-id", DNSRoutes: []profile.DNSRouteStatus{{
+			Domain:    "ts.net",
+			Source:    "split-dns",
+			Resolvers: []*dnstype.Resolver{{Addr: "199.247.155.53"}, {Addr: "10.16.0.2"}},
+		}}},
+		{ProfileID: "work-id", DNSRoutes: []profile.DNSRouteStatus{{
+			Domain:    "ts.net",
+			Source:    "split-dns",
+			Resolvers: []*dnstype.Resolver{{Addr: "10.16.0.2"}, {Addr: "199.247.155.53"}},
+		}}},
+	}
+	plan := BuildDNS(st, statuses)
+	if len(plan.Imported) != 1 || !plan.Imported[0].Active || plan.Imported[0].ProfileID != "personal-id" {
+		t.Fatalf("imported route = %+v", plan.Imported)
+	}
+	if got := plan.Resource.Imported[0].State; got != "installed" {
+		t.Fatalf("runtime state = %q, want installed", got)
+	}
+}
+
+func TestAcceptAllDuplicateRoutesWithDifferentResolversStayAmbiguous(t *testing.T) {
+	st := state.State{Profiles: []state.Profile{
+		{ID: "personal-id", Name: "personal", AcceptAllDNSRoutes: true},
+		{ID: "work-id", Name: "work", AcceptAllDNSRoutes: true},
+	}}
+	statuses := []profile.Status{
+		{ProfileID: "personal-id", DNSRoutes: []profile.DNSRouteStatus{{
+			Domain:    "corp.example",
+			Source:    "split-dns",
+			Resolvers: []*dnstype.Resolver{{Addr: "10.16.0.2"}},
+		}}},
+		{ProfileID: "work-id", DNSRoutes: []profile.DNSRouteStatus{{
+			Domain:    "corp.example",
+			Source:    "split-dns",
+			Resolvers: []*dnstype.Resolver{{Addr: "10.99.0.2"}},
+		}}},
+	}
+	plan := BuildDNS(st, statuses)
+	if len(plan.Imported) != 1 || plan.Imported[0].Active ||
+		plan.Imported[0].Reason != "ambiguous_route" {
+		t.Fatalf("imported route = %+v", plan.Imported)
+	}
+}
