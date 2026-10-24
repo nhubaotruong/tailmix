@@ -48,6 +48,9 @@ type Status struct {
 	ExitNodeID      string
 	PublicKey       string
 	ListenPort      uint16
+	// LastConnected is when the engine last reached a running tunnel. Zero
+	// means the engine has not connected since it started.
+	LastConnected time.Time
 }
 
 type PeerStatus struct {

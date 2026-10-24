@@ -332,7 +332,6 @@ var warpPlatformSupported = runtime.GOOS == "linux"
 
 var (
 	errWarpPlatform = errors.New("WARP profiles are supported on Linux only")
-	errWarpEngine   = errors.New("WARP profile engine is not available in this build")
 )
 
 func (s *supervisor) startProfileLocked(configured state.Profile, authKey, authKeyEnv string) error {
@@ -392,13 +391,21 @@ func (s *supervisor) startProfileLockedWithWireGuardTransition(configured state.
 		if configured.Warp == nil {
 			return errors.New("WARP profile has no configuration")
 		}
-		if _, err := warpcfg.LoadSecrets(configured.StateDir); err != nil {
+		secrets, err := warpcfg.LoadSecrets(configured.StateDir)
+		if err != nil {
 			return err
 		}
 		if s.cfg.Mode != "tun" {
 			return errors.New("WARP profiles require TUN mode")
 		}
-		return errWarpEngine
+		rp.Engine = tailmixprofile.NewWarpEngine(tailmixprofile.WarpEngineConfig{
+			ProfileID: configured.ID,
+			Alias:     profileName(configured),
+			Config:    *configured.Warp,
+			Secrets:   secrets,
+			Tun:       rp.Tun,
+			Logf:      prefixedLogf(s.cfg.Stderr, "warp"),
+		})
 	default:
 		cancel()
 		return fmt.Errorf("unsupported profile kind %q", configured.Kind)
