@@ -839,6 +839,19 @@ func TestExitNodeSetAndClearRequests(t *testing.T) {
 	}
 }
 
+func TestExitNodeSetWarpProfileWithoutPeer(t *testing.T) {
+	client := &fakeManagementClient{}
+	code := runWithDependencies(context.Background(),
+		[]string{"exit-node", "set", "--profile", "warp"},
+		testDependencies(client, io.Discard, io.Discard, nil))
+	if code != 0 {
+		t.Fatalf("set exit code = %d", code)
+	}
+	if client.exitSet.ProfileName != "warp" || client.exitSet.Peer != "" {
+		t.Fatalf("set request = %+v", client.exitSet)
+	}
+}
+
 func TestExitNodeListShowsSelectedAndAvailableNodes(t *testing.T) {
 	nodeIP := netip.MustParseAddr("100.64.0.20")
 	client := &fakeManagementClient{exitNodes: controlapi.ExitNodes{

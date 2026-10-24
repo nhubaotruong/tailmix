@@ -689,6 +689,11 @@ func (s *supervisor) setExitNodePreferencesLocked(statuses []tailmixprofile.Stat
 		if managed.status.BackendState != "Running" {
 			continue
 		}
+		if managed.status.Kind == state.ProfileKindWarp {
+			// A WARP profile has no exit-node preference to set, and its stored
+			// registration ID changes when it re-registers.
+			continue
+		}
 		controller, ok := managed.runtime.Engine.(tailmixprofile.ExitNodePreferenceController)
 		if !ok {
 			if wantID == "" {

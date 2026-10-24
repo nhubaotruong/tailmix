@@ -10,6 +10,7 @@ import (
 	"github.com/maisem/tailmix/controlapi"
 	tailmixprofile "github.com/maisem/tailmix/profile"
 	"github.com/maisem/tailmix/state"
+	"github.com/maisem/tailmix/warpcfg"
 )
 
 type exitPreferenceEngine struct {
@@ -302,5 +303,167 @@ func TestRouteAllIsAlwaysEnabled(t *testing.T) {
 	}
 	if len(work.routeChanges) != 1 {
 		t.Fatalf("route preference changed with exit-node selection = %v, want [true]", work.routeChanges)
+	}
+}
+
+func exitNodeTestState() state.State {
+	st := testPolicyState()
+	st.Profiles[0].StateDir = "profiles/work"
+	st.Profiles = append(st.Profiles, state.Profile{
+		ID: "p_warp", Name: "warp", Kind: state.ProfileKindWarp,
+		StateDir: "profiles/warp", Warp: &warpcfg.Config{},
+	})
+	return st
+}
+
+func exitNodeTestProfile(t *testing.T, s *supervisor, id string) state.Profile {
+	t.Helper()
+	for _, configured := range s.st.Profiles {
+		if configured.ID == id {
+			return configured
+		}
+	}
+	t.Fatalf("profile %s not found", id)
+	return state.Profile{}
+}
+
+func TestSetExitNodeSelectsWarpProfileWithoutPeer(t *testing.T) {
+	st := exitNodeTestState()
+	s := newLifecycleTestSupervisor(t, st)
+	work := exitNodeTestProfile(t, s, "p_work")
+	warp := exitNodeTestProfile(t, s, "p_warp")
+	workEngine := &exitPreferenceEngine{status: tailmixprofile.Status{
+		ProfileID: "p_work", Alias: "work", BackendState: "Running",
+		Peers: []tailmixprofile.PeerStatus{{
+			NodeID: "node-work-exit", DNSName: "gateway.example.ts.net.",
+			TailscaleIPs:   []netip.Addr{netip.MustParseAddr("100.64.0.20")},
+			ExitNodeOption: true, Online: true,
+		}},
+	}}
+	warpStatus := tailmixprofile.Status{
+		ProfileID: "p_warp", Alias: "warp", Kind: "warp", BackendState: "Running",
+		ExitNodeID: "registration-1",
+		SelfIPs:    []netip.Addr{netip.MustParseAddr("172.16.0.2")},
+	}
+	s.runtimes[work.ID] = &managedProfile{
+		runtime: runtimeProfile{State: work, Engine: workEngine},
+		status:  workEngine.status,
+	}
+	s.runtimes[warp.ID] = &managedProfile{
+		runtime: runtimeProfile{State: warp, Engine: &lifecycleEngine{status: warpStatus}},
+		status:  warpStatus,
+	}
+
+	if _, err := s.SetExitNode(context.Background(), controlapi.SetExitNodeRequest{
+		ProfileName: "work", Peer: "gateway",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if s.st.ExitNode == nil || s.st.ExitNode.ProfileID != "p_work" {
+		t.Fatalf("tailnet selection = %+v", s.st.ExitNode)
+	}
+
+	nodes, err := s.SetExitNode(context.Background(), controlapi.SetExitNodeRequest{ProfileName: "warp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := state.ExitNode{
+		ProfileID: "p_warp", NodeID: "registration-1",
+		PeerIP: netip.MustParseAddr("172.16.0.2"),
+	}
+	if s.st.ExitNode == nil || *s.st.ExitNode != want {
+		t.Fatalf("WARP selection = %+v, want %+v", s.st.ExitNode, want)
+	}
+	if nodes.Selected == nil || nodes.Selected.State != "installed" || !nodes.Selected.Online {
+		t.Fatalf("selected exit node = %+v", nodes.Selected)
+	}
+	available := false
+	for _, node := range nodes.Available {
+		if node.ProfileID == "p_warp" && node.NodeID == "registration-1" &&
+			slices.Equal(node.IPs, warpStatus.SelfIPs) && node.Location == nil {
+			available = true
+		}
+	}
+	if !available {
+		t.Fatalf("WARP profile missing from available exit nodes: %+v", nodes.Available)
+	}
+
+	loaded, err := s.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ExitNode == nil || *loaded.ExitNode != want {
+		t.Fatalf("reloaded selection = %+v, want %+v", loaded.ExitNode, want)
+	}
+
+	if _, err := s.SetExitNode(context.Background(), controlapi.SetExitNodeRequest{
+		ProfileName: "work", Peer: "gateway",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if s.st.ExitNode == nil || s.st.ExitNode.ProfileID != "p_work" {
+		t.Fatalf("tailnet reselection = %+v", s.st.ExitNode)
+	}
+}
+
+func TestSetExitNodeSelectsWarpProfileWithoutIdentity(t *testing.T) {
+	st := exitNodeTestState()
+	s := newLifecycleTestSupervisor(t, st)
+	warp := exitNodeTestProfile(t, s, "p_warp")
+	warpStatus := tailmixprofile.Status{
+		ProfileID: "p_warp", Alias: "warp", Kind: "warp", BackendState: "Running",
+	}
+	s.runtimes[warp.ID] = &managedProfile{
+		runtime: runtimeProfile{State: warp, Engine: &lifecycleEngine{status: warpStatus}},
+		status:  warpStatus,
+	}
+
+	nodes, err := s.SetExitNode(context.Background(), controlapi.SetExitNodeRequest{ProfileName: "warp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := state.ExitNode{ProfileID: "p_warp"}
+	if s.st.ExitNode == nil || *s.st.ExitNode != want {
+		t.Fatalf("WARP selection = %+v, want %+v", s.st.ExitNode, want)
+	}
+	if nodes.Selected == nil || nodes.Selected.State != "installed" || nodes.Selected.NodeID != "" {
+		t.Fatalf("selected exit node = %+v", nodes.Selected)
+	}
+}
+
+func TestSetExitNodeRefusesDisabledWarpProfile(t *testing.T) {
+	st := exitNodeTestState()
+	for i := range st.Profiles {
+		if st.Profiles[i].ID == "p_warp" {
+			st.Profiles[i].Disabled = true
+		}
+	}
+	s := newLifecycleTestSupervisor(t, st)
+
+	_, err := s.SetExitNode(context.Background(), controlapi.SetExitNodeRequest{ProfileName: "warp"})
+	apiErr, ok := err.(*controlapi.Error)
+	if !ok || apiErr.Code != "profile_disabled" {
+		t.Fatalf("error = %#v, want profile_disabled", err)
+	}
+}
+
+func TestExitPreferenceSkipsReRegisteredWarpProfile(t *testing.T) {
+	st := exitNodeTestState()
+	st.ExitNode = &state.ExitNode{ProfileID: "p_warp", NodeID: "old-registration"}
+	s := newLifecycleTestSupervisor(t, st)
+
+	status := tailmixprofile.Status{
+		ProfileID: "p_warp", Kind: state.ProfileKindWarp,
+		BackendState: "Running", ExitNodeID: "new-registration",
+	}
+	s.runtimes = map[string]*managedProfile{
+		"p_warp": {
+			runtime: runtimeProfile{Engine: &lifecycleEngine{status: status}},
+			status:  status,
+		},
+	}
+
+	if err := s.setExitNodePreferencesLocked([]tailmixprofile.Status{status}); err != nil {
+		t.Fatalf("exit preference for a re-registered WARP profile: %v", err)
 	}
 }

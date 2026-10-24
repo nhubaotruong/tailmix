@@ -748,9 +748,14 @@ func runExitNode(ctx context.Context, client managementClient, args []string, de
 		if !set || strings.TrimSpace(profileName) == "" {
 			return usageError{"exit-node set requires --profile"}
 		}
-		peer, parseErr := oneOperand(rest, "exit node peer")
-		if parseErr != nil {
-			return parseErr
+		peer := ""
+		switch {
+		case len(rest) > 1:
+			return usageError{"at most one exit node peer is allowed"}
+		case len(rest) == 1 && strings.HasPrefix(rest[0], "-"):
+			return usageError{"at most one exit node peer is allowed"}
+		case len(rest) == 1:
+			peer = rest[0]
 		}
 		result, err = client.SetExitNode(ctx, controlapi.SetExitNodeRequest{
 			ProfileName: profileName,
@@ -1711,7 +1716,7 @@ Default routes use exit-node policy.
 
 const exitNodeHelp = `Usage:
   tailmix exit-node list [--filter <country>] [--json]
-  tailmix exit-node set --profile <profile> <peer> [--json]
+  tailmix exit-node set --profile <profile> [<peer>] [--json]
   tailmix exit-node clear [--json]
 
 Profile option: -p, --profile <profile>

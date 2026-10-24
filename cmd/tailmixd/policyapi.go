@@ -226,19 +226,27 @@ func (s *supervisor) SetExitNode(_ context.Context, request controlapi.SetExitNo
 	if selectedStatus == nil || selectedStatus.BackendState != "Running" {
 		return controlapi.ExitNodes{}, controlapi.NewError("profile_unavailable", "profile %q is not running", request.ProfileName)
 	}
-	peer, err := selectExitNodePeer(*selectedStatus, request.Peer)
-	if err != nil {
-		return controlapi.ExitNodes{}, err
+	selection := &state.ExitNode{ProfileID: configured.ID}
+	if configured.Kind == state.ProfileKindWarp {
+		// The registration ID and tunnel address are optional detail: the WARP
+		// engine owns the tunnel, and selection is by profile ID.
+		selection.NodeID = selectedStatus.ExitNodeID
+		if ip := preferredPeerIP(selectedStatus.SelfIPs); ip.IsValid() {
+			selection.PeerIP = ip
+		}
+	} else {
+		peer, err := selectExitNodePeer(*selectedStatus, request.Peer)
+		if err != nil {
+			return controlapi.ExitNodes{}, err
+		}
+		peerIP := preferredPeerIP(peer.TailscaleIPs)
+		if !peerIP.IsValid() {
+			return controlapi.ExitNodes{}, controlapi.NewError("exit_node_unavailable", "exit node %q has no Tailscale IP", request.Peer)
+		}
+		selection.NodeID = peer.NodeID
+		selection.PeerIP = peerIP
 	}
-	peerIP := preferredPeerIP(peer.TailscaleIPs)
-	if !peerIP.IsValid() {
-		return controlapi.ExitNodes{}, controlapi.NewError("exit_node_unavailable", "exit node %q has no Tailscale IP", request.Peer)
-	}
-	next.ExitNode = &state.ExitNode{
-		ProfileID: configured.ID,
-		NodeID:    peer.NodeID,
-		PeerIP:    peerIP,
-	}
+	next.ExitNode = selection
 	if err := s.commitPolicyLocked(next); err != nil {
 		return controlapi.ExitNodes{}, err
 	}
@@ -263,6 +271,16 @@ func (s *supervisor) exitNodesLocked(statuses []tailmixprofile.Status) controlap
 	result := controlapi.ExitNodes{ReconcileError: s.reconcileErr}
 	for _, status := range statuses {
 		profileName := profileNameByID(s.st, status.ProfileID)
+		if status.Kind == state.ProfileKindWarp {
+			result.Available = append(result.Available, controlapi.AvailableExitNode{
+				ProfileID:   status.ProfileID,
+				ProfileName: profileName,
+				NodeID:      status.ExitNodeID,
+				IPs:         append([]netip.Addr(nil), status.SelfIPs...),
+				Online:      status.BackendState == "Running",
+			})
+			continue
+		}
 		for _, peer := range status.Peers {
 			if !peer.ExitNodeOption {
 				continue
@@ -307,6 +325,16 @@ func (s *supervisor) exitNodesLocked(statuses []tailmixprofile.Status) controlap
 	}
 	if configured == nil || configured.Disabled || configured.Removed {
 		selected.Reason = "profile_unavailable"
+		return result
+	}
+	if configured.Kind == state.ProfileKindWarp {
+		// A WARP selection is applied by profile ID, not by matching a peer.
+		for _, status := range statuses {
+			if status.ProfileID == selected.ProfileID && status.BackendState == "Running" {
+				selected.Online = true
+			}
+		}
+		selected.State = "installed"
 		return result
 	}
 	for _, status := range statuses {
