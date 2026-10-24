@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/maisem/tailmix/warpcfg"
 	"github.com/maisem/tailmix/wireguardcfg"
 )
 
@@ -98,6 +99,34 @@ type WireGuardDestinationResolution struct {
 // WireGuardShieldsUpRequest changes the persistent raw-profile override.
 type WireGuardShieldsUpRequest struct {
 	Enabled bool `json:"enabled"`
+}
+
+// ApplyWarpRequest applies a WARP profile either by registering it with
+// Cloudflare or by importing an existing usque configuration. Exactly one of
+// Register and Config is set. Secrets and Register.JWT are never stored.
+type ApplyWarpRequest struct {
+	Name     string               `json:"name"`
+	Register *WarpRegisterRequest `json:"register,omitempty"`
+	Config   *warpcfg.Config      `json:"config,omitempty"`
+	Secrets  *warpcfg.Secrets     `json:"secrets,omitempty"`
+	DNS      string               `json:"dns,omitempty"`
+	UseHTTP2 bool                 `json:"useHttp2,omitempty"`
+}
+
+// WarpRegisterRequest carries the team token for Zero Trust enrollment. It is
+// used for one enrollment and discarded.
+type WarpRegisterRequest struct {
+	JWT string `json:"jwt,omitempty"`
+}
+
+// WarpProfile is the public runtime view of a WARP profile. It carries no key
+// material.
+type WarpProfile struct {
+	Name      string   `json:"name"`
+	Kind      string   `json:"kind"`
+	Transport string   `json:"transport"`
+	Addresses []string `json:"addresses,omitempty"`
+	Resolver  string   `json:"resolver,omitempty"`
 }
 
 // WireGuardPeer is the public configured and effective view of one peer.

@@ -20,6 +20,7 @@ import (
 	"github.com/maisem/tailmix/exitnodeview"
 	"github.com/maisem/tailmix/profilesocket"
 	tailmixversion "github.com/maisem/tailmix/version"
+	"github.com/maisem/tailmix/warpcfg"
 	"github.com/maisem/tailmix/wireguardcfg"
 	"tailscale.com/cmd/tailscale/cli"
 	"tailscale.com/util/dnsname"
@@ -42,6 +43,7 @@ type managementClient interface {
 	ApplyWireGuard(context.Context, wireguardcfg.Config, wireguardcfg.Secrets) (controlapi.WireGuardProfile, error)
 	WireGuardProfile(context.Context, string) (controlapi.WireGuardProfile, error)
 	SetWireGuardShieldsUp(context.Context, string, bool) (controlapi.WireGuardProfile, error)
+	ApplyWarp(context.Context, controlapi.ApplyWarpRequest) (controlapi.WarpProfile, error)
 	IPRoutes(context.Context, bool) (controlapi.IPRoutes, error)
 	PatchIPRoutes(context.Context, controlapi.PatchIPRoutesRequest) (controlapi.IPRoutes, error)
 	ExitNodes(context.Context) (controlapi.ExitNodes, error)
@@ -123,6 +125,8 @@ func runWithDependencies(ctx context.Context, args []string, deps dependencies) 
 		err = runDNS(ctx, client, args[1:], deps)
 	case "wireguard":
 		err = runWireGuard(ctx, client, args[1:], deps)
+	case "warp":
+		err = runWarp(ctx, client, args[1:], deps)
 	case "tailscale", "ts":
 		err = runTailscale(ctx, client, socketDir, args[1:], deps)
 	case "completion":
@@ -234,6 +238,148 @@ func runWireGuard(ctx context.Context, client managementClient, args []string, d
 	default:
 		return usageError{fmt.Sprintf("unknown wireguard command %q", args[0])}
 	}
+}
+
+func runWarp(ctx context.Context, client managementClient, args []string, deps dependencies) error {
+	if len(args) == 0 || isHelp(args[0]) {
+		fmt.Fprint(deps.stdout, warpHelp)
+		return nil
+	}
+	if args[0] != "register" {
+		return usageError{fmt.Sprintf("unknown warp command %q", args[0])}
+	}
+	rest := args[1:]
+	jwtFile, jwtFound, err := takeString(&rest, "--jwt-file")
+	if err != nil {
+		return err
+	}
+	configPath, configFound, err := takeString(&rest, "--config")
+	if err != nil {
+		return err
+	}
+	dnsAddr, _, err := takeString(&rest, "--dns")
+	if err != nil {
+		return err
+	}
+	transport, transportFound, err := takeString(&rest, "--transport")
+	if err != nil {
+		return err
+	}
+	name, err := oneOperand(rest, "WARP profile name")
+	if err != nil {
+		return err
+	}
+	if jwtFound && configFound {
+		return usageError{"warp register accepts --jwt-file or --config, not both"}
+	}
+	if transportFound && transport != "quic" && transport != "http2" {
+		return usageError{"--transport must be quic or http2"}
+	}
+
+	request := controlapi.ApplyWarpRequest{Name: name, DNS: dnsAddr, UseHTTP2: transport == "http2"}
+	switch {
+	case configFound:
+		config, secrets, err := loadWarpImport(configPath)
+		if err != nil {
+			return err
+		}
+		if !transportFound {
+			request.UseHTTP2 = config.UseHTTP2
+		}
+		request.Config, request.Secrets = &config, &secrets
+	case jwtFound:
+		teamToken, err := os.ReadFile(jwtFile)
+		if err != nil {
+			return fmt.Errorf("read team token file: %w", err)
+		}
+		if !confirmWarpTerms(deps) {
+			return errors.New("WARP registration requires Terms of Service consent")
+		}
+		request.Register = &controlapi.WarpRegisterRequest{JWT: strings.TrimSpace(string(teamToken))}
+	default:
+		if !confirmWarpTerms(deps) {
+			return errors.New("WARP registration requires Terms of Service consent")
+		}
+		request.Register = &controlapi.WarpRegisterRequest{}
+	}
+
+	result, err := client.ApplyWarp(ctx, request)
+	if err != nil {
+		return err
+	}
+	writeWarpProfile(deps.stdout, result)
+	if configFound {
+		fmt.Fprintf(deps.stderr, "Delete %s once the profile starts; it contains the private key.\n", configPath)
+	}
+	return nil
+}
+
+func confirmWarpTerms(deps dependencies) bool {
+	fmt.Fprint(deps.stderr, "WARP registration accepts the Cloudflare Terms of Service. Continue? [y/N] ")
+	var answer string
+	if _, err := fmt.Fscan(deps.stdin, &answer); err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
+type warpImportFile struct {
+	PrivateKey     string `json:"private_key"`
+	EndpointV4     string `json:"endpoint_v4"`
+	EndpointV6     string `json:"endpoint_v6"`
+	EndpointH2V4   string `json:"endpoint_h2_v4"`
+	EndpointH2V6   string `json:"endpoint_h2_v6"`
+	EndpointPubKey string `json:"endpoint_pub_key"`
+	ID             string `json:"id"`
+	AccessToken    string `json:"access_token"`
+	IPv4           string `json:"ipv4"`
+	IPv6           string `json:"ipv6"`
+	UseHTTP2       bool   `json:"use_http2"`
+}
+
+func loadWarpImport(path string) (warpcfg.Config, warpcfg.Secrets, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return warpcfg.Config{}, warpcfg.Secrets{}, fmt.Errorf("read WARP configuration: %w", err)
+	}
+	var file warpImportFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return warpcfg.Config{}, warpcfg.Secrets{}, fmt.Errorf("parse WARP configuration: %w", err)
+	}
+	ipv4, err := netip.ParseAddr(file.IPv4)
+	if err != nil {
+		return warpcfg.Config{}, warpcfg.Secrets{}, errors.New("WARP configuration ipv4 is not an IP address")
+	}
+	ipv6, err := netip.ParseAddr(file.IPv6)
+	if err != nil {
+		return warpcfg.Config{}, warpcfg.Secrets{}, errors.New("WARP configuration ipv6 is not an IP address")
+	}
+	config := warpcfg.Config{
+		EndpointV4:        file.EndpointV4,
+		EndpointV6:        file.EndpointV6,
+		EndpointH2V4:      file.EndpointH2V4,
+		EndpointH2V6:      file.EndpointH2V6,
+		EndpointPublicKey: file.EndpointPubKey,
+		IPv4:              ipv4,
+		IPv6:              ipv6,
+		UseHTTP2:          file.UseHTTP2,
+	}
+	secrets := warpcfg.Secrets{
+		PrivateKey:     file.PrivateKey,
+		RegistrationID: file.ID,
+		AccessToken:    file.AccessToken,
+	}
+	return config, secrets, nil
+}
+
+func writeWarpProfile(w io.Writer, profile controlapi.WarpProfile) {
+	table := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(table, "PROFILE:\t%s\nKIND:\t%s\nTRANSPORT:\t%s\n", profile.Name, profile.Kind, profile.Transport)
+	_ = table.Flush()
 }
 
 func parseWireGuardManifest(manifestPath string, stdin io.Reader) (wireguardcfg.Config, wireguardcfg.Secrets, error) {
@@ -1627,6 +1773,7 @@ Commands:
   dns routes   Route DNS suffixes through selected profiles
   dns search   Manage the ordered OS search-domain list
   wireguard    Apply and inspect raw WireGuard profiles
+  warp         Register, import, and start Cloudflare WARP profiles
   tailscale    Run an upstream Tailscale command for one profile
   ts           Shortcut for tailscale
   completion   Generate shell completion scripts
@@ -1649,6 +1796,21 @@ paths are resolved from the manifest directory, or from the current directory
 when the manifest is read from standard input. Show never includes private or
 preshared key material. Shields-up persistently suppresses configured grants
 while preserving replies to locally initiated traffic.
+`
+
+const warpHelp = `Usage:
+  tailmix warp register <name> [flags]
+
+Register or import a Cloudflare WARP profile and start it in one command.
+
+Flags:
+  --jwt-file <path>   Enroll through Zero Trust with a team token file
+  --config <path>     Import a usque config.json without contacting Cloudflare
+  --dns <address>     Resolver for the profile (default 1.1.1.1)
+  --transport <kind>  quic (default) or http2
+
+Registration asks for Terms of Service consent on this terminal before it calls
+the daemon. Delete an imported configuration file once the profile starts.
 `
 
 const versionHelp = `Usage:

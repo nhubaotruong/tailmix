@@ -94,6 +94,12 @@ func (c *Client) SetWireGuardShieldsUp(ctx context.Context, name string, enabled
 	return out, err
 }
 
+func (c *Client) ApplyWarp(ctx context.Context, request ApplyWarpRequest) (WarpProfile, error) {
+	var out WarpProfile
+	err := c.do(ctx, http.MethodPost, "/v1/warp", request, &out)
+	return out, err
+}
+
 func (c *Client) AddProfile(ctx context.Context, request AddProfileRequest) (Profile, error) {
 	var out Profile
 	err := c.do(ctx, http.MethodPost, "/v1/profiles", request, &out)

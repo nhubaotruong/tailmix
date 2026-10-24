@@ -41,6 +41,9 @@ type fakeManagementClient struct {
 	wireGuardProfile controlapi.WireGuardProfile
 	wireGuardName    string
 	wireGuardShields bool
+	warpRequest      controlapi.ApplyWarpRequest
+	warpCalls        int
+	warpProfile      controlapi.WarpProfile
 	added            []controlapi.AddProfileRequest
 }
 
@@ -136,6 +139,12 @@ func (f *fakeManagementClient) SetWireGuardShieldsUp(_ context.Context, name str
 	f.wireGuardShields = enabled
 	f.wireGuardProfile.ShieldsUp = enabled
 	return f.wireGuardProfile, nil
+}
+
+func (f *fakeManagementClient) ApplyWarp(_ context.Context, request controlapi.ApplyWarpRequest) (controlapi.WarpProfile, error) {
+	f.warpCalls++
+	f.warpRequest = request
+	return f.warpProfile, nil
 }
 
 func testDependencies(client managementClient, stdout, stderr io.Writer, runner cliRunner) dependencies {

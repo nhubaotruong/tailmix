@@ -26,6 +26,7 @@ type Backend interface {
 	ApplyWireGuard(context.Context, wireguardcfg.Config, wireguardcfg.Secrets) (WireGuardProfile, error)
 	WireGuardProfile(context.Context, string) (WireGuardProfile, error)
 	SetWireGuardShieldsUp(context.Context, string, bool) (WireGuardProfile, error)
+	ApplyWarp(context.Context, ApplyWarpRequest) (WarpProfile, error)
 
 	IPRoutes(context.Context, bool) (IPRoutes, error)
 	PatchIPRoutes(context.Context, PatchIPRoutesRequest) (IPRoutes, error)
@@ -185,6 +186,14 @@ func Handler(backend Backend) http.Handler {
 		result, backendErr := backend.SetWireGuardShieldsUp(r.Context(), name, request.Enabled)
 		writeResult(w, result, backendErr)
 	})
+	mux.HandleFunc("POST /v1/warp", func(w http.ResponseWriter, r *http.Request) {
+		var request ApplyWarpRequest
+		if !decodeRequest(w, r, &request) {
+			return
+		}
+		result, err := backend.ApplyWarp(r.Context(), request)
+		writeResult(w, result, err)
+	})
 
 	mux.HandleFunc("GET /v1/routes", func(w http.ResponseWriter, r *http.Request) {
 		result, err := backend.IPRoutes(r.Context(), false)
@@ -340,6 +349,8 @@ func writeResult(w http.ResponseWriter, result any, err error) {
 			status = http.StatusConflict
 		case "permission_denied":
 			status = http.StatusForbidden
+		case "warp_credentials":
+			status = http.StatusBadGateway
 		case "internal_error", "runtime_start_failed", "runtime_stop_failed", "dns_configuration_failed",
 			"reconcile_failed", "purge_failed":
 			status = http.StatusInternalServerError

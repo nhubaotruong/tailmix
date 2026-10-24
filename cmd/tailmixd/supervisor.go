@@ -384,18 +384,21 @@ func (s *supervisor) startProfileLockedWithWireGuardTransition(configured state.
 			StartRestricted: wireGuardTransition,
 		})
 	case state.ProfileKindWarp:
-		cancel()
 		if !warpPlatformSupported {
+			cancel()
 			return errWarpPlatform
 		}
 		if configured.Warp == nil {
+			cancel()
 			return errors.New("WARP profile has no configuration")
 		}
 		secrets, err := warpcfg.LoadSecrets(configured.StateDir)
 		if err != nil {
+			cancel()
 			return err
 		}
 		if s.cfg.Mode != "tun" {
+			cancel()
 			return errors.New("WARP profiles require TUN mode")
 		}
 		rp.Engine = tailmixprofile.NewWarpEngine(tailmixprofile.WarpEngineConfig{

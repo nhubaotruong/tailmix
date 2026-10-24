@@ -27,6 +27,9 @@ type recordingBackend struct {
 	wireGuardProfile WireGuardProfile
 	wireGuardName    string
 	wireGuardShields bool
+	warpRequest      ApplyWarpRequest
+	warpProfile      WarpProfile
+	warpErr          error
 }
 
 func (b *recordingBackend) UpdateStatus(context.Context) (UpdateStatus, error) { return b.update, nil }
@@ -99,6 +102,43 @@ func (b *recordingBackend) SetWireGuardShieldsUp(_ context.Context, name string,
 	b.wireGuardShields = enabled
 	b.wireGuardProfile.ShieldsUp = enabled
 	return b.wireGuardProfile, nil
+}
+
+func (b *recordingBackend) ApplyWarp(_ context.Context, request ApplyWarpRequest) (WarpProfile, error) {
+	b.warpRequest = request
+	return b.warpProfile, b.warpErr
+}
+
+func TestHandlerAppliesWarpProfile(t *testing.T) {
+	backend := &recordingBackend{warpProfile: WarpProfile{Name: "cloudflare", Kind: "warp", Transport: "quic"}}
+	body, err := json.Marshal(ApplyWarpRequest{
+		Name:     "cloudflare",
+		Register: &WarpRegisterRequest{JWT: "team-token"},
+		DNS:      "9.9.9.9",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	Handler(backend).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/warp", strings.NewReader(string(body))))
+	if response.Code != http.StatusOK || backend.warpRequest.Name != "cloudflare" || backend.warpRequest.Register == nil || backend.warpRequest.Register.JWT != "team-token" {
+		t.Fatalf("status = %d, request = %+v, body = %s", response.Code, backend.warpRequest, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "team-token") {
+		t.Fatalf("response exposed the team token: %s", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"kind":"warp"`) || !strings.Contains(response.Body.String(), `"transport":"quic"`) {
+		t.Fatalf("body = %s", response.Body.String())
+	}
+}
+
+func TestHandlerReportsWarpCredentialFailure(t *testing.T) {
+	backend := &recordingBackend{warpErr: NewError("warp_credentials", "WARP registration failed")}
+	response := httptest.NewRecorder()
+	Handler(backend).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/warp", strings.NewReader(`{"name":"cloudflare"}`)))
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
 }
 
 func TestHandlerReturnsServerVersion(t *testing.T) {
