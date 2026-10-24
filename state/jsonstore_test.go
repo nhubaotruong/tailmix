@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maisem/tailmix/warpcfg"
 	"github.com/maisem/tailmix/wireguardcfg"
 )
 
@@ -197,6 +198,65 @@ func TestStoreRejectsUnsafeWireGuardSecretReference(t *testing.T) {
 		WireGuard: &config, WireGuardSecretFile: "../wireguard-secrets-stolen.json",
 	}}}
 	if err := NewJSONStore(filepath.Join(t.TempDir(), "state.json")).Save(st); err == nil || !strings.Contains(err.Error(), "invalid secret file reference") {
+		t.Fatalf("got error %v", err)
+	}
+}
+
+func TestStoreRoundTripWarpProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store := NewJSONStore(path)
+	config := warpcfg.Config{
+		EndpointV4:            "162.159.198.2:4443",
+		EndpointV6:            "[2606:4700:103::2]:4443",
+		EndpointH2V4:          "162.159.198.2:443",
+		EndpointH2V6:          "[2606:4700:103::2]:443",
+		EndpointPublicKey:     "-----BEGIN PUBLIC KEY-----\nkey\n-----END PUBLIC KEY-----",
+		IPv4:                  netip.MustParseAddr("172.16.0.2"),
+		IPv6:                  netip.MustParseAddr("2606:4700:110:8f5a:1:2:3:4"),
+		DNS:                   netip.MustParseAddr("1.1.1.1"),
+		UseHTTP2:              true,
+		CredentialsGeneration: "gen-1",
+	}
+	want := State{
+		Profiles: []Profile{{
+			ID: "p_warp", Name: "warp", Kind: ProfileKindWarp,
+			StateDir: "profiles/p_warp", Warp: &config,
+		}},
+		// A WARP exit-node selection needs only the profile ID.
+		ExitNode: &ExitNode{ProfileID: "p_warp"},
+	}
+	if err := store.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"privateKey", "registrationId", "accessToken"} {
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("daemon state carries %q:\n%s", secret, data)
+		}
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Profiles) != 1 {
+		t.Fatalf("profiles = %+v", got.Profiles)
+	}
+	profile := got.Profiles[0]
+	if profile.Kind != ProfileKindWarp || profile.Warp == nil || *profile.Warp != config {
+		t.Fatalf("WARP profile did not round trip: %+v", profile)
+	}
+	if got.ExitNode == nil || got.ExitNode.ProfileID != "p_warp" {
+		t.Fatalf("WARP exit node selection did not survive load: %+v", got.ExitNode)
+	}
+}
+
+func TestStoreRejectsUnknownProfileKind(t *testing.T) {
+	st := State{Profiles: []Profile{{ID: "p_x", StateDir: "profiles/p_x", Kind: "freedom"}}}
+	err := NewJSONStore(filepath.Join(t.TempDir(), "state.json")).Save(st)
+	if err == nil || !strings.Contains(err.Error(), "unsupported kind") {
 		t.Fatalf("got error %v", err)
 	}
 }

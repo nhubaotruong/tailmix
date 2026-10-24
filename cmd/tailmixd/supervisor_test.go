@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/maisem/tailmix/profilesocket"
 	"github.com/maisem/tailmix/socksproxy"
 	"github.com/maisem/tailmix/state"
+	"github.com/maisem/tailmix/warpcfg"
 	"github.com/maisem/tailmix/wireguardcfg"
 	"github.com/tailscale/wireguard-go/tun"
 	"golang.org/x/net/dns/dnsmessage"
@@ -409,5 +411,132 @@ func TestSupervisorDNSReplacementDrainsAcrossMultipleUpdates(t *testing.T) {
 	}
 	if msg.Header.ID != 42 || msg.Header.RCode != dnsmessage.RCodeSuccess || !msg.Header.Response {
 		t.Fatalf("drained reply = %+v", msg)
+	}
+}
+
+func newWarpTestSupervisor(t *testing.T, st state.State) *supervisor {
+	t.Helper()
+	dir := t.TempDir()
+	store := state.NewJSONStore(filepath.Join(dir, "state.json"))
+	if err := store.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s := newSupervisor(store, st, nil, daemonConfig{Mode: "tun", SocketDir: dir, Stderr: io.Discard})
+	s.ctx = ctx
+	s.cancel = cancel
+	return s
+}
+
+func warpTestState(dir string) state.State {
+	return state.State{
+		SyntheticPool: "100.127.0.0/24",
+		Profiles: []state.Profile{
+			{ID: "p_work", Name: "work", StateDir: filepath.Join(dir, "work")},
+			{
+				ID: "p_warp", Name: "warp", Kind: state.ProfileKindWarp, StateDir: filepath.Join(dir, "warp"),
+				Warp: &warpcfg.Config{
+					EndpointV4: "162.159.198.2:4443",
+					IPv4:       netip.MustParseAddr("172.16.0.2"),
+					DNS:        netip.MustParseAddr("1.1.1.1"),
+				},
+			},
+		},
+	}
+}
+
+func warpTestProfile(t *testing.T, st state.State) state.Profile {
+	t.Helper()
+	for _, configured := range st.Profiles {
+		if configured.Kind == state.ProfileKindWarp {
+			return configured
+		}
+	}
+	t.Fatal("test state has no WARP profile")
+	return state.Profile{}
+}
+
+func startRunningTestProfile(t *testing.T, s *supervisor, profileID string) *lifecycleEngine {
+	t.Helper()
+	for _, configured := range s.st.Profiles {
+		if configured.ID != profileID {
+			continue
+		}
+		engine := &lifecycleEngine{status: tailmixprofile.Status{ProfileID: profileID, BackendState: "Running"}}
+		s.runtimes[profileID] = &managedProfile{
+			runtime: runtimeProfile{State: configured, Engine: engine},
+			cancel:  func() {},
+			status:  engine.status,
+		}
+		return engine
+	}
+	t.Fatalf("test state has no profile %q", profileID)
+	return nil
+}
+
+func TestWarpProfileWithoutCredentialsReportsReRegistration(t *testing.T) {
+	dir := t.TempDir()
+	st := warpTestState(dir)
+	s := newWarpTestSupervisor(t, st)
+	startRunningTestProfile(t, s, "p_work")
+	warp := warpTestProfile(t, st)
+
+	err := s.startProfileLocked(warp, "", "")
+	if !errors.Is(err, warpcfg.ErrCredentialsMissing) {
+		t.Fatalf("start error = %v, want ErrCredentialsMissing", err)
+	}
+	s.lastErrors[warp.ID] = err.Error()
+
+	projected := s.projectProfileLocked(warp)
+	if projected.RuntimeState != "error" {
+		t.Fatalf("warp runtime state = %q, want error", projected.RuntimeState)
+	}
+	if projected.BackendState != "NeedsReRegistration" {
+		t.Fatalf("warp backend state = %q, want NeedsReRegistration", projected.BackendState)
+	}
+	if !strings.Contains(projected.LastError, "re-register") {
+		t.Fatalf("warp last error = %q, want re-registration", projected.LastError)
+	}
+	if _, ok := s.runtimes["p_warp"]; ok {
+		t.Fatal("warp profile opened a runtime without credentials")
+	}
+	for _, configured := range st.Profiles {
+		if configured.ID == "p_work" && s.projectProfileLocked(configured).RuntimeState != "running" {
+			t.Fatal("tailscale profile stopped when the WARP profile failed")
+		}
+	}
+}
+
+func TestWarpProfileReportsPlatformLimitOnDarwin(t *testing.T) {
+	dir := t.TempDir()
+	st := warpTestState(dir)
+	s := newWarpTestSupervisor(t, st)
+	startRunningTestProfile(t, s, "p_work")
+	warp := warpTestProfile(t, st)
+	if err := warpcfg.SaveSecrets(warp.StateDir, warpcfg.Secrets{PrivateKey: "key", RegistrationID: "id"}); err != nil {
+		t.Fatal(err)
+	}
+	previous := warpPlatformSupported
+	warpPlatformSupported = false
+	t.Cleanup(func() { warpPlatformSupported = previous })
+
+	err := s.startProfileLocked(warp, "", "")
+	if err == nil || !strings.Contains(err.Error(), "Linux only") {
+		t.Fatalf("start error = %v, want a platform limit", err)
+	}
+	s.lastErrors[warp.ID] = err.Error()
+
+	projected := s.projectProfileLocked(warp)
+	if projected.RuntimeState != "error" || !strings.Contains(projected.LastError, "Linux only") {
+		t.Fatalf("warp projection = %+v", projected)
+	}
+	if _, ok := s.runtimes["p_warp"]; ok {
+		t.Fatal("warp profile opened a runtime on an unsupported platform")
+	}
+	for _, configured := range st.Profiles {
+		if configured.ID == "p_work" && s.projectProfileLocked(configured).RuntimeState != "running" {
+			t.Fatal("tailscale profile stopped when the WARP profile failed")
+		}
 	}
 }

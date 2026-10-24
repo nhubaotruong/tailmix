@@ -76,10 +76,24 @@ func Normalize(st *State) {
 	}
 	st.SearchDomains = slices.Clip(search)
 
-	if st.ExitNode != nil &&
-		(st.ExitNode.ProfileID == "" || st.ExitNode.NodeID == "" || !st.ExitNode.PeerIP.IsValid()) {
+	if st.ExitNode != nil && !validExitNode(st) {
 		st.ExitNode = nil
 	}
+}
+
+// validExitNode accepts a WARP selection with only its profile ID, because the
+// registration ID and tunnel address are optional detail for that kind.
+func validExitNode(st *State) bool {
+	selected := st.ExitNode
+	if selected.ProfileID == "" {
+		return false
+	}
+	for _, configured := range st.Profiles {
+		if configured.ID == selected.ProfileID && configured.Kind == ProfileKindWarp {
+			return true
+		}
+	}
+	return selected.NodeID != "" && selected.PeerIP.IsValid()
 }
 
 func normalizeDomain(raw string) string {

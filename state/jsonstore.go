@@ -66,8 +66,8 @@ func validateProfiles(st *State) error {
 		profile := &st.Profiles[i]
 		switch profile.Kind {
 		case ProfileKindTailscale:
-			if profile.WireGuard != nil || profile.WireGuardSecretFile != "" {
-				return fmt.Errorf("profile %q has WireGuard state but is a Tailscale profile", profile.Name)
+			if profile.WireGuard != nil || profile.WireGuardSecretFile != "" || profile.Warp != nil {
+				return fmt.Errorf("profile %q has WireGuard or WARP state but is a Tailscale profile", profile.Name)
 			}
 		case ProfileKindWireGuard:
 			if profile.WireGuard == nil {
@@ -89,6 +89,13 @@ func validateProfiles(st *State) error {
 				return fmt.Errorf("WireGuard profile %q has an invalid secret file reference", profile.Name)
 			}
 			profile.WireGuard = &normalized
+		case ProfileKindWarp:
+			if profile.WireGuard != nil || profile.WireGuardSecretFile != "" || profile.WireGuardShieldsUp {
+				return fmt.Errorf("profile %q has WireGuard state but is a WARP profile", profile.Name)
+			}
+			if profile.Warp == nil {
+				return fmt.Errorf("WARP profile %q has no configuration", profile.Name)
+			}
 		default:
 			return fmt.Errorf("profile %q has unsupported kind %q", profile.Name, profile.Kind)
 		}

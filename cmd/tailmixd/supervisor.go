@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"github.com/maisem/tailmix/socksproxy"
 	"github.com/maisem/tailmix/state"
 	"github.com/maisem/tailmix/tunmux"
+	"github.com/maisem/tailmix/warpcfg"
 	"github.com/maisem/tailmix/wireguardcfg"
 	"tailscale.com/types/dnstype"
 )
@@ -325,6 +327,14 @@ func (s *supervisor) startAggregateLocked() error {
 	return nil
 }
 
+// A WARP profile needs the Linux tunnel engine of this build.
+var warpPlatformSupported = runtime.GOOS == "linux"
+
+var (
+	errWarpPlatform = errors.New("WARP profiles are supported on Linux only")
+	errWarpEngine   = errors.New("WARP profile engine is not available in this build")
+)
+
 func (s *supervisor) startProfileLocked(configured state.Profile, authKey, authKeyEnv string) error {
 	return s.startProfileLockedWithWireGuardTransition(configured, authKey, authKeyEnv, false)
 }
@@ -374,6 +384,21 @@ func (s *supervisor) startProfileLockedWithWireGuardTransition(configured state.
 			ShieldsUp:       configured.WireGuardShieldsUp,
 			StartRestricted: wireGuardTransition,
 		})
+	case state.ProfileKindWarp:
+		cancel()
+		if !warpPlatformSupported {
+			return errWarpPlatform
+		}
+		if configured.Warp == nil {
+			return errors.New("WARP profile has no configuration")
+		}
+		if _, err := warpcfg.LoadSecrets(configured.StateDir); err != nil {
+			return err
+		}
+		if s.cfg.Mode != "tun" {
+			return errors.New("WARP profiles require TUN mode")
+		}
+		return errWarpEngine
 	default:
 		cancel()
 		return fmt.Errorf("unsupported profile kind %q", configured.Kind)
@@ -866,6 +891,11 @@ func (s *supervisor) projectProfileLocked(configured state.Profile) controlapi.P
 		managed := s.runtimes[configured.ID]
 		if managed == nil {
 			result.RuntimeState = "error"
+			if kind == state.ProfileKindWarp {
+				if _, err := warpcfg.LoadSecrets(configured.StateDir); err != nil {
+					result.BackendState = "NeedsReRegistration"
+				}
+			}
 			break
 		}
 		status := managed.status

@@ -3,12 +3,14 @@ package state
 import (
 	"net/netip"
 
+	"github.com/maisem/tailmix/warpcfg"
 	"github.com/maisem/tailmix/wireguardcfg"
 )
 
 const (
 	ProfileKindTailscale = "tailscale"
 	ProfileKindWireGuard = "wireguard"
+	ProfileKindWarp      = "warp"
 )
 
 type UpdateState struct {
@@ -52,6 +54,7 @@ type Profile struct {
 	WireGuard           *wireguardcfg.Config `json:"wireguard,omitempty"`
 	WireGuardSecretFile string               `json:"wireguardSecretFile,omitempty"`
 	WireGuardShieldsUp  bool                 `json:"wireguardShieldsUp,omitempty"`
+	Warp                *warpcfg.Config      `json:"warp,omitempty"`
 }
 
 type IPRouteBinding struct {
