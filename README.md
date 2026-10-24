@@ -85,6 +85,15 @@ sudo tailmix exit-node clear
 `gateway` may be a short hostname, full DNS name, stable node ID, or Tailscale
 IP.
 
+Each profile can also serve its tailnet as an exit node or subnet router.
+Advertise and approve the route with the Tailscale commands, then this host
+forwards peer traffic itself:
+
+```sh
+sudo tailmix ts -p home set --advertise-exit-node
+tailmix ts -p home status                              # wait for approval, or approve in the admin console
+```
+
 ## DNS
 
 Each tailnet's MagicDNS names work automatically. The exit node's tailnet
