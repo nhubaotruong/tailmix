@@ -600,10 +600,15 @@ func addDNSCandidate(candidates []DNSEntry, entry DNSEntry) []DNSEntry {
 
 // coalesceDNSCandidates keeps one candidate when every profile advertises the
 // domain with the same resolvers. Such routes answer identically, so the first
-// configured profile wins instead of leaving the domain unrouted.
+// configured profile wins instead of leaving the domain unrouted. A single
+// MagicDNS candidate wins outright, because admins route MagicDNS per tailnet
+// and that route carries the intended resolver.
 func coalesceDNSCandidates(candidates []DNSEntry) []DNSEntry {
 	if len(candidates) < 2 {
 		return candidates
+	}
+	if magic, ok := onlyMagicDNSCandidate(candidates); ok {
+		return []DNSEntry{magic}
 	}
 	key := dnsResolverKey(candidates[0])
 	if key == "" {
@@ -615,6 +620,23 @@ func coalesceDNSCandidates(candidates []DNSEntry) []DNSEntry {
 		}
 	}
 	return candidates[:1]
+}
+
+func onlyMagicDNSCandidate(candidates []DNSEntry) (DNSEntry, bool) {
+	found := -1
+	for i, candidate := range candidates {
+		if candidate.Source != "magicdns" {
+			continue
+		}
+		if found >= 0 {
+			return DNSEntry{}, false
+		}
+		found = i
+	}
+	if found < 0 {
+		return DNSEntry{}, false
+	}
+	return candidates[found], true
 }
 
 func dnsResolverKey(entry DNSEntry) string {

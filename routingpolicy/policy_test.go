@@ -403,3 +403,26 @@ func TestAcceptAllDuplicateRoutesWithDifferentResolversStayAmbiguous(t *testing.
 		t.Fatalf("imported route = %+v", plan.Imported)
 	}
 }
+
+func TestAcceptAllDuplicateRoutesPreferMagicDNS(t *testing.T) {
+	st := state.State{Profiles: []state.Profile{
+		{ID: "personal-id", Name: "personal", AcceptAllDNSRoutes: true},
+		{ID: "work-id", Name: "work", AcceptAllDNSRoutes: true},
+	}}
+	statuses := []profile.Status{
+		{ProfileID: "personal-id", DNSRoutes: []profile.DNSRouteStatus{{
+			Domain:    "corp.example",
+			Source:    "split-dns",
+			Resolvers: []*dnstype.Resolver{{Addr: "10.99.0.2"}},
+		}}},
+		{ProfileID: "work-id", DNSRoutes: []profile.DNSRouteStatus{{
+			Domain: "corp.example",
+			Source: "magicdns",
+		}}},
+	}
+	plan := BuildDNS(st, statuses)
+	if len(plan.Imported) != 1 || !plan.Imported[0].Active ||
+		plan.Imported[0].ProfileID != "work-id" || plan.Imported[0].Source != "magicdns" {
+		t.Fatalf("imported route = %+v", plan.Imported)
+	}
+}
