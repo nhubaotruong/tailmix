@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 
 	connectip "github.com/Diniboy1123/connect-ip-go"
@@ -18,6 +17,56 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 	"golang.org/x/net/http2"
 )
+
+// Transport supplies the sockets the tunnel dials through. A caller keeps the
+// tunnel's own traffic on a chosen interface by supplying sockets that carry
+// its bypass mark, so neither the QUIC socket nor the HTTP/2 socket re-enters
+// the default route the tunnel installs (R12).
+type Transport struct {
+	// ListenPacket opens the QUIC packet socket. It matches
+	// net.ListenConfig.ListenPacket, which netns.Listener returns.
+	ListenPacket func(ctx context.Context, network, address string) (net.PacketConn, error)
+	// DialContext opens the HTTP/2 TCP socket. It matches
+	// netns.Dialer.DialContext.
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// ipConn is the part of *connectip.Conn the forwarding loop uses.
+type ipConn interface {
+	WritePacketBuffer(buf []byte, packetOffset, packetLen int) (icmp []byte, err error)
+	ReadPacketZeroCopy(allowAny bool) ([]byte, error)
+	Close() error
+}
+
+// connection is one established Connect-IP tunnel and its sockets.
+type connection struct {
+	conn      ipConn
+	transport *http3.Transport
+	packet    net.PacketConn
+	client    *http.Client
+	response  *http.Response
+	endpoint  net.Addr
+	useHTTP2  bool
+	logf      func(format string, args ...any)
+}
+
+// Close releases every socket the connection holds.
+func (c *connection) Close() error {
+	var err error
+	if c.conn != nil {
+		err = c.conn.Close()
+	}
+	if c.transport != nil {
+		_ = c.transport.Close()
+	}
+	if c.client != nil {
+		c.client.CloseIdleConnections()
+	}
+	if c.packet != nil {
+		_ = c.packet.Close()
+	}
+	return err
+}
 
 // PrepareTlsConfig creates a TLS configuration using the provided certificate and SNI (Server Name Indication).
 // It also verifies the peer's public key against the provided public key.
@@ -88,26 +137,25 @@ func PrepareTlsConfig(privKey *ecdsa.PrivateKey, peerPubKey *ecdsa.PublicKey, ce
 	return tlsConfig, nil
 }
 
-// ConnectTunnel establishes a Connect-IP tunnel with the provided endpoint.
+// connectTunnel establishes a Connect-IP tunnel with the provided endpoint
+// through the caller's transport.
 // When useHTTP2 is false it dials over QUIC/HTTP3; when true it dials over TCP/HTTP2.
 // Requires modified connect-ip-go for now to support Cloudflare's non RFC compliant implementation.
 //
 // Parameters:
 //   - ctx: context.Context - The connection context.
+//   - transport: Transport - The sockets the tunnel dials through.
 //   - tlsConfig: *tls.Config - The TLS configuration for secure communication.
 //   - quicConfig: *quic.Config - The QUIC configuration settings (ignored in HTTP/2 mode).
-//   - connectUri: string - The URI template for the Connect-IP request.
+//   - connectURI: string - The URI template for the Connect-IP request.
 //   - endpoint: net.Addr - The remote endpoint (*net.UDPAddr for HTTP/3, *net.TCPAddr for HTTP/2).
 //   - useHTTP2: bool - When true, connect over TCP+TLS/HTTP2 instead of QUIC/HTTP3.
 //
 // Returns:
-//   - *net.UDPConn: The UDP connection used for the QUIC session (nil in HTTP/2 mode).
-//   - *http3.Transport: The HTTP/3 transport (nil in HTTP/2 mode).
-//   - *connectip.Conn: The Connect-IP connection instance.
-//   - *http.Response: The response from the Connect-IP handshake.
+//   - *connection: The established tunnel.
 //   - error: An error if the connection setup fails.
-func ConnectTunnel(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.Config, connectUri string, endpoint net.Addr, useHTTP2 bool) (*net.UDPConn, *http3.Transport, *connectip.Conn, *http.Response, error) {
-	template := uritemplate.MustNew(connectUri)
+func connectTunnel(ctx context.Context, transport Transport, tlsConfig *tls.Config, quicConfig *quic.Config, connectURI string, endpoint net.Addr, useHTTP2 bool) (*connection, error) {
+	template := uritemplate.MustNew(connectURI)
 	additionalHeaders := http.Header{
 		"User-Agent": []string{""},
 	}
@@ -115,7 +163,7 @@ func ConnectTunnel(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.
 	if useHTTP2 {
 		h2Endpoint, ok := endpoint.(*net.TCPAddr)
 		if !ok || h2Endpoint == nil {
-			return nil, nil, nil, nil, errors.New("missing HTTP/2 TCP endpoint")
+			return nil, errors.New("missing HTTP/2 TCP endpoint")
 		}
 
 		h2Headers := additionalHeaders.Clone()
@@ -123,68 +171,62 @@ func ConnectTunnel(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.
 		// TODO: support PQC
 		h2Headers.Set("pq-enabled", "false")
 
-		h2Client, err := newHTTP2Client(tlsConfig, h2Endpoint, connectUri)
+		h2Client, err := newHTTP2Client(tlsConfig, h2Endpoint, transport.DialContext)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("failed to create HTTP/2 client: %w", err)
+			return nil, fmt.Errorf("failed to create HTTP/2 client: %w", err)
 		}
 
 		ipConn, rsp, err := connectip.DialH2(ctx, h2Client, template, h2Headers)
 		if err != nil {
+			h2Client.CloseIdleConnections()
 			if strings.Contains(err.Error(), "tls: access denied") {
-				return nil, nil, nil, nil, errors.New("login failed! Please double-check if your tls key and cert is enrolled in the Cloudflare Access service")
+				return nil, errors.New("login failed! Please double-check if your tls key and cert is enrolled in the Cloudflare Access service")
 			}
-			return nil, nil, nil, nil, fmt.Errorf("failed to dial connect-ip over HTTP/2: %w", err)
+			return nil, fmt.Errorf("failed to dial connect-ip over HTTP/2: %w", err)
 		}
-		return nil, nil, ipConn, rsp, nil
+		return &connection{conn: ipConn, client: h2Client, response: rsp, endpoint: endpoint, useHTTP2: true}, nil
 	}
 
 	quicEndpoint, ok := endpoint.(*net.UDPAddr)
 	if !ok || quicEndpoint == nil {
-		return nil, nil, nil, nil, errors.New("missing HTTP/3 UDP endpoint")
+		return nil, errors.New("missing HTTP/3 UDP endpoint")
 	}
 
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		udpConn, tr, ipConn, rsp, err := connectTunnelHTTP3(ctx, tlsConfig, quicConfig, template, additionalHeaders, quicEndpoint)
+		conn, err := connectTunnelHTTP3(ctx, transport, tlsConfig, quicConfig, template, additionalHeaders, quicEndpoint)
 		if err == nil {
-			return udpConn, tr, ipConn, rsp, nil
+			return conn, nil
 		}
 		if strings.Contains(err.Error(), "tls: access denied") {
-			return nil, nil, nil, nil, errors.New("login failed! Please double-check if your tls key and cert is enrolled in the Cloudflare Access service")
+			return nil, errors.New("login failed! Please double-check if your tls key and cert is enrolled in the Cloudflare Access service")
 		}
 		lastErr = err
 		if !isRetryableHTTP3ConnectFailure(err) {
 			break
 		}
 	}
-	return nil, nil, nil, nil, fmt.Errorf("failed to dial connect-ip: %w", lastErr)
+	return nil, fmt.Errorf("failed to dial connect-ip: %w", lastErr)
 }
 
-func connectTunnelHTTP3(ctx context.Context, tlsConfig *tls.Config, quicConfig *quic.Config, template *uritemplate.Template, additionalHeaders http.Header, endpoint *net.UDPAddr) (*net.UDPConn, *http3.Transport, *connectip.Conn, *http.Response, error) {
-	var udpConn *net.UDPConn
-	var err error
+func connectTunnelHTTP3(ctx context.Context, transport Transport, tlsConfig *tls.Config, quicConfig *quic.Config, template *uritemplate.Template, additionalHeaders http.Header, endpoint *net.UDPAddr) (*connection, error) {
+	network, address := "udp4", "0.0.0.0:0"
 	if endpoint.IP.To4() == nil {
-		udpConn, err = net.ListenUDP("udp", &net.UDPAddr{
-			IP:   net.IPv6zero,
-			Port: 0,
-		})
-	} else {
-		udpConn, err = net.ListenUDP("udp", &net.UDPAddr{
-			IP:   net.IPv4zero,
-			Port: 0,
-		})
+		network, address = "udp6", "[::]:0"
 	}
+
+	packet, err := transport.ListenPacket(ctx, network, address)
 	if err != nil {
-		return udpConn, nil, nil, nil, err
+		return nil, err
 	}
 
 	// without ConnectionIDLength set, backend occasionally throws PROTOCOL_VIOLATION
 	// and that closes our connection
-	qtr := &quic.Transport{Conn: udpConn, ConnectionIDLength: 20}
+	qtr := &quic.Transport{Conn: packet, ConnectionIDLength: 20}
 	conn, err := qtr.Dial(ctx, endpoint, tlsConfig, quicConfig)
 	if err != nil {
-		_ = udpConn.Close()
-		return nil, nil, nil, nil, err
+		_ = packet.Close()
+		return nil, err
 	}
 
 	tr := &http3.Transport{
@@ -204,11 +246,11 @@ func connectTunnelHTTP3(ctx context.Context, tlsConfig *tls.Config, quicConfig *
 	if err != nil {
 		_ = tr.Close()
 		_ = conn.CloseWithError(0, "connect-ip dial failed")
-		_ = udpConn.Close()
-		return nil, nil, nil, nil, err
+		_ = packet.Close()
+		return nil, err
 	}
 
-	return udpConn, tr, ipConn, rsp, nil
+	return &connection{conn: ipConn, transport: tr, packet: packet, response: rsp, endpoint: endpoint}, nil
 }
 
 func isRetryableHTTP3ConnectFailure(err error) bool {
@@ -220,73 +262,28 @@ func isRetryableHTTP3ConnectFailure(err error) bool {
 		strings.Contains(msg, "PROTOCOL_VIOLATION")
 }
 
-// newHTTP2Client builds an HTTP client for CONNECT-IP over HTTP/2.
-// It honors proxy environment variables and pins dialing to the selected endpoint.
-func newHTTP2Client(baseTLSConfig *tls.Config, endpoint *net.TCPAddr, connectURI string) (*http.Client, error) {
+// newHTTP2Client builds an HTTP client for CONNECT-IP over HTTP/2. It dials
+// through the caller's dialer and pins dialing to the selected endpoint, so no
+// proxy environment variable can take the socket off the chosen interface.
+func newHTTP2Client(baseTLSConfig *tls.Config, endpoint *net.TCPAddr, dial func(ctx context.Context, network, address string) (net.Conn, error)) (*http.Client, error) {
 	if endpoint == nil {
 		return nil, errors.New("missing HTTP/2 endpoint")
 	}
-
-	parsedURI, err := url.Parse(connectURI)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse connect URI: %w", err)
+	if dial == nil {
+		return nil, errors.New("missing HTTP/2 dialer")
 	}
-
-	proxyURL, _ := http.ProxyFromEnvironment(&http.Request{URL: parsedURI})
 
 	tlsConfig := baseTLSConfig.Clone()
 	tlsConfig.NextProtos = []string{"h2"}
 
-	if proxyURL == nil {
-		transport := &http2.Transport{
-			DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
-				dialer := &net.Dialer{}
-				conn, err := dialer.DialContext(ctx, network, endpoint.String())
-				if err != nil {
-					return nil, err
-				}
-
-				tlsConn := tls.Client(conn, tlsConfig)
-				if err := tlsConn.HandshakeContext(ctx); err != nil {
-					_ = conn.Close()
-					return nil, err
-				}
-				return tlsConn, nil
-			},
-		}
-
-		return &http.Client{Transport: transport}, nil
-	}
-
-	originAuthority := authorityWithDefaultPort(parsedURI, "443")
-	proxyAuthority := authorityWithDefaultPort(proxyURL, proxyDefaultPort(proxyURL))
-	dialer := &net.Dialer{}
-	transport := &http.Transport{
-		Proxy:              http.ProxyFromEnvironment,
-		ForceAttemptHTTP2:  true,
-		DisableCompression: true,
-		TLSClientConfig:    tlsConfig,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if addr == originAuthority {
-				addr = endpoint.String()
-			}
-			return dialer.DialContext(ctx, network, addr)
-		},
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dialAddr := addr
-			dialTLSConfig := tlsConfig
-			if addr == proxyAuthority && proxyURL != nil {
-				dialTLSConfig = &tls.Config{ServerName: proxyURL.Hostname()}
-			} else if addr == originAuthority {
-				dialAddr = endpoint.String()
-			}
-
-			conn, err := dialer.DialContext(ctx, network, dialAddr)
+	transport := &http2.Transport{
+		DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
+			conn, err := dial(ctx, network, endpoint.String())
 			if err != nil {
 				return nil, err
 			}
 
-			tlsConn := tls.Client(conn, dialTLSConfig)
+			tlsConn := tls.Client(conn, tlsConfig)
 			if err := tlsConn.HandshakeContext(ctx); err != nil {
 				_ = conn.Close()
 				return nil, err
@@ -296,31 +293,4 @@ func newHTTP2Client(baseTLSConfig *tls.Config, endpoint *net.TCPAddr, connectURI
 	}
 
 	return &http.Client{Transport: transport}, nil
-}
-
-// authorityWithDefaultPort normalizes URL authority by adding a default port when missing.
-func authorityWithDefaultPort(u *url.URL, defaultPort string) string {
-	if u == nil {
-		return ""
-	}
-
-	host := u.Hostname()
-	if host == "" {
-		return u.Host
-	}
-
-	port := u.Port()
-	if port == "" {
-		port = defaultPort
-	}
-
-	return net.JoinHostPort(host, port)
-}
-
-// proxyDefaultPort returns the default port for proxy scheme.
-func proxyDefaultPort(u *url.URL) string {
-	if u != nil && u.Scheme == "https" {
-		return "443"
-	}
-	return "80"
 }

@@ -3,10 +3,13 @@ module github.com/maisem/tailmix
 go 1.27.3
 
 require (
+	github.com/Diniboy1123/connect-ip-go v0.0.0-20260613064811-66cba32d7d33
 	github.com/gaissmai/bart v0.29.0
+	github.com/quic-go/quic-go v0.60.0
 	github.com/tailscale/netlink v1.1.1-0.20240822203006-4d49adab4de7
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc
 	github.com/tailscale/wireguard-go v0.0.0-20260928213032-417aef361226
+	github.com/yosida95/uritemplate/v3 v3.0.2
 	go.yaml.in/yaml/v2 v2.4.4
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb
 	golang.org/x/mod v0.41.0
@@ -48,6 +51,7 @@ require (
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20260526185140-fb298caac7ca // indirect
 	github.com/diskfs/go-diskfs v1.9.4 // indirect
+	github.com/dunglas/httpsfv v1.0.2 // indirect
 	github.com/fogleman/gg v1.3.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
@@ -72,6 +76,7 @@ require (
 	github.com/peterbourgon/ff/v3 v3.4.0 // indirect
 	github.com/pires/go-proxyproto v0.15.0 // indirect
 	github.com/pkg/sftp v1.13.11 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/safchain/ethtool v0.7.0 // indirect
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	github.com/tailscale/certstore v0.1.1-0.20260409135935-3638fb84b77d // indirect
