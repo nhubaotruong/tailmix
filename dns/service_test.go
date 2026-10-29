@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"tailscale.com/types/dnstype"
 	"tailscale.com/util/dnsname"
 )
 
@@ -84,5 +85,38 @@ func TestConfigForServiceRoutesSharedPeerByExactFQDN(t *testing.T) {
 	}
 	if _, ok := dnsCfg.Routes[foreignSuffix]; ok {
 		t.Fatalf("shared peer unexpectedly made tailmix authoritative for %q", foreignSuffix)
+	}
+}
+
+func TestConfigForServicePublishesSplitDomainsAsMatchDomains(t *testing.T) {
+	dnsCfg, err := configForService(ServiceConfig{
+		Domains: []Domain{{ProfileID: "work", Suffix: "work.ts.net", AuthoritativeOnly: true}},
+		Routes: []Route{
+			{Suffix: ".", ProfileID: "personal", Resolvers: []*dnstype.Resolver{{Addr: "10.0.0.53"}}},
+			{Suffix: "graf.parcelperform.com", ProfileID: "work", Resolvers: []*dnstype.Resolver{{Addr: "10.16.0.2"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	split, err := dnsname.ToFQDN("graf.parcelperform.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dnsCfg.Routes[split]; len(got) != 1 || got[0].Addr != "10.16.0.2" {
+		t.Fatalf("split route %q = %v", split, got)
+	}
+	defaultRoute, hasDefaultRoute := dnsCfg.Routes[dnsname.FQDN(".")]
+	if !defaultRouteIsMatchDomain {
+		if hasDefaultRoute || len(dnsCfg.DefaultResolvers) != 1 {
+			t.Fatalf("default route = %v, present=%v, default resolvers = %v", defaultRoute, hasDefaultRoute, dnsCfg.DefaultResolvers)
+		}
+		return
+	}
+	if !hasDefaultRoute || len(defaultRoute) != 1 || defaultRoute[0].Addr != "10.0.0.53" {
+		t.Fatalf("default route = %v, present=%v", defaultRoute, hasDefaultRoute)
+	}
+	if len(dnsCfg.DefaultResolvers) != 0 {
+		t.Fatalf("default resolvers = %v; want the default route published as a match domain", dnsCfg.DefaultResolvers)
 	}
 }

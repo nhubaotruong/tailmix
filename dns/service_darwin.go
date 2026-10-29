@@ -14,6 +14,10 @@ import (
 
 const platformGOOS = "darwin"
 
+// macOS installs the default route as a global resolver, which already
+// receives every query, so it must stay in DefaultResolvers.
+const defaultRouteIsMatchDomain = false
+
 const (
 	defaultResolverDir        = "/etc/resolver"
 	tailmixSearchResolverFile = "search.tailmix"

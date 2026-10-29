@@ -142,6 +142,15 @@ func configForService(cfg ServiceConfig) (tailscaledns.Config, error) {
 		}
 		routes[suffix] = cloneDNSResolvers(route.Resolvers)
 	}
+	if defaultRouteIsMatchDomain && defaultResolvers != nil {
+		// The OS only sends a name to tailmix when it matches a link domain.
+		// With "." in DefaultResolvers tailscale installs no match domains, so
+		// split-DNS names also reach public resolvers and their answers win.
+		// Publishing "." as a route makes every route a match domain, and
+		// quad-100 still forwards unmatched names to the default resolvers.
+		routes[dnsname.FQDN(".")] = defaultResolvers
+		defaultResolvers = nil
+	}
 	searchDomains := make([]dnsname.FQDN, 0, len(cfg.SearchDomains))
 	seenSearch := map[dnsname.FQDN]bool{}
 	for _, raw := range cfg.SearchDomains {
