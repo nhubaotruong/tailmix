@@ -9,10 +9,10 @@ product_contract_source: ce-brainstorm
 
 ## Goal Capsule
 
-- **Objective:** Give every tailmix capability a native GNOME desktop surface, in a separate Rust application that drives the existing `tailmix` CLI and adds no privileged surface of its own.
-- **Means (fixed):** Rust, `gtk4` plus the `adw` crate, own repository, reads through `tailmix … --json`, mutations through `pkexec tailmix …`.
+- **Objective:** Give every tailmix capability a native GNOME desktop surface, in a Rust application that drives the existing `tailmix` CLI and adds no privileged surface of its own.
+- **Means (fixed):** Rust, `gtk4` plus the `adw` crate, a self-contained crate under `gui/` that leaves for its own repository later, reads through `tailmix … --json`, mutations through `pkexec tailmix …`.
 - **Product authority:** the CLI remains the reference implementation; where the GUI and the CLI disagree, the CLI behaviour wins.
-- **Open blockers:** repository location and app id, and whether the CLI `--json` additions ship before or with the GUI.
+- **Open blockers:** none, once the CLI `--json` additions ship as their own change.
 
 ---
 
@@ -30,7 +30,7 @@ tailmix's capability lives behind subcommand flags: route policy is per-prefix `
 
 **Application shell**
 
-- R1. Ships as a separate repository and binary `tailmix-gui`, installed beside the CLI with a `.desktop` entry and an app icon.
+- R1. Ships as a binary `tailmix-gui` built from a self-contained crate in `gui/`, with application id `io.github.nhubaotruong.TailmixGui`, a `.desktop` entry, and an app icon.
 - R2. Presents one window with four top-level views — Status, Profiles, Network, System — selected by an `AdwViewSwitcher` in the header bar.
 - R3. Moves the view switcher into an `AdwViewSwitcherBar` when the window is too narrow for the header position.
 - R4. Opens a profile's detail by pushing a page inside the Profiles view, and never opens a third level of navigation.
@@ -108,9 +108,14 @@ tailmix's capability lives behind subcommand flags: route policy is per-prefix `
 
 ### Key Decisions
 
-- **Rust with gtk4-rs and the `adw` crate in its own repository.**
+- **Rust with gtk4-rs and the `adw` crate.**
   Native Adwaita widgets, MIT licensing, and no cgo in the CLI tree.
   (session-settled: user-directed — chosen over Go with gotk4: gotk4-adwaita is AGPL-3.0 and forces cgo builds.)
+  Governs R1.
+
+- **The crate lives in `gui/` for now and moves to its own repository later.**
+  The GUI stays separate code with its own toolchain, while the first iteration is easy to build and test beside the CLI.
+  (session-settled: user-directed)
   Governs R1.
 
 - **The CLI's `--json` output is the read contract.**
@@ -245,18 +250,18 @@ flowchart TB
 ### Dependencies and Assumptions
 
 - `tailmix` and `tailmixd` are installed at `/usr/bin`, the daemon runs as a systemd service, and the control socket is at `/var/run/tailmix` or `$TAILMIX_SOCKET_DIR`.
-- The R48 CLI additions must land before the views that consume them, in this repository.
+- The R48 CLI additions land first, as their own CLI-only change and release, before the views that consume them. The GUI depends on that release, not on unreleased CLI behaviour.
+- The crate in `gui/` must not import the Go module: its only contact with tailmix is the installed `tailmix` binary. Moving it to its own repository is a directory move, not a refactor.
 - Building requires `gtk4-devel`, `libadwaita-devel`, and a Rust toolchain; the development host is Fedora Silverblue without GTK development headers, so builds happen in a distrobox container or after layering packages.
 - A polkit agent is running in the operator's session, as GNOME provides by default.
 - `pkexec` preserves stdin, so `--auth-key-file -` and `wireguard apply --file -` work through it.
-- Default names, to be confirmed: repository `github.com/maisem/tailmix-gui`, application id `io.github.maisem.Tailmix`.
+- Application id is `io.github.nhubaotruong.TailmixGui`; the crate lives in `gui/`.
 
 ### Outstanding Questions
 
 **Resolve Before Planning**
 
-- What is the final repository location and application id?
-- Do the `--json` additions land in this repository as part of the same effort, or as a separate CLI release that the GUI depends on?
+None.
 
 **Deferred to Planning**
 
