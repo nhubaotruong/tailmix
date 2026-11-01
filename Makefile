@@ -10,8 +10,11 @@ SED ?= sed
 SYSTEMCTL ?= systemctl
 SYSTEMD_UNIT_DIR ?= $(PREFIX)/lib/systemd/system
 SYSTEMD_UNIT ?= tailmixd.service
+CARGO ?= cargo
+GUI_DIR ?= gui
+GUI_APP ?= io.github.nhubaotruong.TailmixGui
 
-.PHONY: check check-linux-network clean-linux-network check-ci ci install install-systemd install-test licenses licenses-check release-check
+.PHONY: check check-linux-network clean-linux-network check-ci ci install install-systemd install-gui gui install-test licenses licenses-check release-check
 
 check:
 	$(GO) test ./...
@@ -58,6 +61,17 @@ install-systemd: install
 	else \
 		echo "Installed $(SYSTEMD_UNIT) under $(DESTDIR); service was not enabled or started."; \
 	fi
+
+# The GUI needs gtk4 and libadwaita development headers, so it stays out of
+# `make install` and the release archive.
+gui:
+	$(CARGO) build --release --manifest-path $(GUI_DIR)/Cargo.toml
+
+install-gui: gui
+	$(INSTALL) -D -m 0755 "$(GUI_DIR)/target/release/tailmix-gui" "$(DESTDIR)$(BINDIR)/tailmix-gui"
+	$(INSTALL) -D -m 0644 "$(GUI_DIR)/data/$(GUI_APP).desktop" "$(DESTDIR)$(PREFIX)/share/applications/$(GUI_APP).desktop"
+	$(INSTALL) -D -m 0644 "$(GUI_DIR)/data/$(GUI_APP).metainfo.xml" "$(DESTDIR)$(PREFIX)/share/metainfo/$(GUI_APP).metainfo.xml"
+	$(INSTALL) -D -m 0644 "$(GUI_DIR)/data/$(GUI_APP).svg" "$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(GUI_APP).svg"
 
 licenses:
 	./scripts/licenses.sh update

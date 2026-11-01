@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.nhubaotruong.TailmixGui</id>
+  <name>Tailmix</name>
+  <summary>Join several Tailscale networks at once</summary>
+  <description>
+    <p>
+      Tailmix shows every Tailscale profile on this machine, the subnet routes and
+      exit nodes they offer, and the DNS policy that applies. Commands that change
+      machine policy run through polkit, so the command line keeps working exactly
+      as before.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.nhubaotruong.TailmixGui.desktop</launchable>
+  <url type="homepage">https://github.com/maisem/tailmix</url>
+  <developer id="io.github.nhubaotruong">
+    <name>Nhubaotruong</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-01"/>
+  </releases>
+</component>
