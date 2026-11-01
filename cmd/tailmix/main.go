@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -64,6 +65,26 @@ type usageError struct {
 
 func (e usageError) Error() string { return e.message }
 
+// errConsentRequired is the failure a --json caller must be able to tell apart
+// from any other rejection, so it is a sentinel instead of a formatted string.
+var errConsentRequired = errors.New("WARP registration requires Terms of Service consent")
+
+// errorRecord is the machine-readable failure record a --json caller receives on
+// standard error. Success payloads never carry an error field, so a caller
+// reads the exit code and this record together.
+type errorRecord struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// versionReport is the --json form of "tailmix version". The daemon is
+// optional, so its absence is reported rather than failing the command.
+type versionReport struct {
+	ClientVersion string `json:"clientVersion"`
+	ServerVersion string `json:"serverVersion,omitempty"`
+	DaemonUp      bool   `json:"daemonUp"`
+}
+
 type dependencies struct {
 	stdin     io.Reader
 	stdout    io.Writer
@@ -99,6 +120,7 @@ func runWithDependencies(ctx context.Context, args []string, deps dependencies) 
 		fmt.Fprintln(deps.stderr, `Run "tailmix help" for usage.`)
 		return 2
 	}
+	wantsJSON := jsonRequested(args)
 	if len(args) == 0 {
 		fmt.Fprint(deps.stderr, rootHelp)
 		return 2
@@ -145,13 +167,70 @@ func runWithDependencies(ctx context.Context, args []string, deps dependencies) 
 		return 0
 	}
 	var usage usageError
-	if errors.As(err, &usage) {
+	isUsage := errors.As(err, &usage)
+	if wantsJSON {
+		// A --json caller parses standard error, so it gets the record alone
+		// instead of the record followed by human guidance.
+		_ = writeJSON(deps.stderr, errorRecord{Code: failureCode(err), Message: err.Error()})
+		if isUsage {
+			return 2
+		}
+		return 1
+	}
+	if isUsage {
 		fmt.Fprintln(deps.stderr, usage.message)
 		fmt.Fprintln(deps.stderr, `Run "tailmix help" for usage.`)
 		return 2
 	}
 	fmt.Fprintln(deps.stderr, err)
 	return 1
+}
+
+// jsonRequested reports whether the invocation asked for machine-readable
+// output. It inspects the raw arguments because a failure can happen before the
+// subcommand parses its own flags.
+func jsonRequested(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "tailscale", "ts", "completion":
+		return false
+	}
+	return slices.Contains(args[1:], "--json")
+}
+
+// failureCode maps an error onto the stable vocabulary the GUI switches on.
+func failureCode(err error) string {
+	var usage usageError
+	if errors.As(err, &usage) {
+		return "invalid_argument"
+	}
+	if errors.Is(err, errConsentRequired) {
+		return "consent_required"
+	}
+	var apiErr *controlapi.Error
+	if errors.As(err, &apiErr) {
+		switch apiErr.Code {
+		case "permission_denied":
+			return "permission_denied"
+		case "profile_not_found":
+			return "not_found"
+		case "profile_exists", "route_binding_conflict", "dns_route_binding_conflict":
+			return "already_exists"
+		case "daemon_down":
+			return "daemon_unavailable"
+		case "invalid_request", "invalid_prefix", "invalid_dns_name", "invalid_state",
+			"unsupported", "unsupported_mode", "binding_profile_mismatch":
+			return "invalid_argument"
+		}
+		return "internal"
+	}
+	// controlapi wraps a dial failure with this prefix; the daemon never answers.
+	if strings.HasPrefix(err.Error(), "connect to tailmix daemon:") {
+		return "daemon_unavailable"
+	}
+	return "internal"
 }
 
 func runWireGuard(ctx context.Context, client managementClient, args []string, deps dependencies) error {
@@ -250,6 +329,14 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 		return usageError{fmt.Sprintf("unknown warp command %q", args[0])}
 	}
 	rest := args[1:]
+	jsonOutput, err := takeBool(&rest, "--json")
+	if err != nil {
+		return err
+	}
+	acceptTOS, err := takeBool(&rest, "--accept-tos")
+	if err != nil {
+		return err
+	}
 	jwtFile, jwtFileFound, err := takeString(&rest, "--jwt-file")
 	if err != nil {
 		return err
@@ -291,6 +378,19 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 	}
 
 	request := controlapi.ApplyWarpRequest{Name: name, DNS: dnsAddr, UseHTTP2: transport == "http2"}
+	consent := func() error {
+		// A --json caller cannot answer a prompt, so it must pass --accept-tos.
+		if acceptTOS {
+			return nil
+		}
+		if jsonOutput {
+			return errConsentRequired
+		}
+		if confirmWarpTerms(deps) {
+			return nil
+		}
+		return errConsentRequired
+	}
 	switch {
 	case configFound:
 		config, secrets, err := loadWarpImport(configPath)
@@ -310,8 +410,8 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 		if err != nil {
 			return err
 		}
-		if !confirmWarpTerms(deps) {
-			return errors.New("WARP registration requires Terms of Service consent")
+		if err := consent(); err != nil {
+			return err
 		}
 		request.Register = &controlapi.WarpRegisterRequest{JWT: teamToken}
 	case jwtFound:
@@ -319,13 +419,13 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 		if err != nil {
 			return err
 		}
-		if !confirmWarpTerms(deps) {
-			return errors.New("WARP registration requires Terms of Service consent")
+		if err := consent(); err != nil {
+			return err
 		}
 		request.Register = &controlapi.WarpRegisterRequest{JWT: teamToken}
 	default:
-		if !confirmWarpTerms(deps) {
-			return errors.New("WARP registration requires Terms of Service consent")
+		if err := consent(); err != nil {
+			return err
 		}
 		request.Register = &controlapi.WarpRegisterRequest{}
 	}
@@ -333,6 +433,9 @@ func runWarp(ctx context.Context, client managementClient, args []string, deps d
 	result, err := client.ApplyWarp(ctx, request)
 	if err != nil {
 		return err
+	}
+	if jsonOutput {
+		return writeJSON(deps.stdout, result)
 	}
 	writeWarpProfile(deps.stdout, result)
 	if configFound {
@@ -528,13 +631,24 @@ func runVersion(ctx context.Context, client managementClient, args []string, dep
 		fmt.Fprint(deps.stdout, versionHelp)
 		return nil
 	}
+	jsonOutput, err := takeBool(&args, "--json")
+	if err != nil {
+		return err
+	}
 	if err := noOperands(args); err != nil {
 		return err
 	}
+	serverVersion, serverErr := client.Version(ctx)
+	if jsonOutput {
+		report := versionReport{ClientVersion: deps.version, DaemonUp: serverErr == nil}
+		if serverErr == nil {
+			report.ServerVersion = serverVersion.Format("tailmixd")
+		}
+		return writeJSON(deps.stdout, report)
+	}
 	fmt.Fprintln(deps.stdout, deps.version)
 	fmt.Fprintln(deps.stdout)
-	serverVersion, err := client.Version(ctx)
-	if err != nil {
+	if serverErr != nil {
 		fmt.Fprintln(deps.stdout, "tailmixd unavailable")
 		return nil
 	}
@@ -544,8 +658,12 @@ func runVersion(ctx context.Context, client managementClient, args []string, dep
 
 func runDaemonAction(ctx context.Context, client managementClient, action string, args []string, deps dependencies) error {
 	if len(args) > 0 && isHelp(args[0]) {
-		fmt.Fprintf(deps.stdout, "Usage:\n  tailmix %s\n", action)
+		fmt.Fprintf(deps.stdout, "Usage:\n  tailmix %s [--json]\n", action)
 		return nil
+	}
+	jsonOutput, err := takeBool(&args, "--json")
+	if err != nil {
+		return err
 	}
 	if err := noOperands(args); err != nil {
 		return err
@@ -553,6 +671,9 @@ func runDaemonAction(ctx context.Context, client managementClient, action string
 	result, err := client.SetDaemonUp(ctx, action == "up")
 	if err != nil {
 		return err
+	}
+	if jsonOutput {
+		return writeJSON(deps.stdout, result)
 	}
 	fmt.Fprintf(deps.stdout, "tailmix is %s.\n", result.State)
 	return nil
@@ -631,15 +752,23 @@ func runProfiles(ctx context.Context, client managementClient, args []string, de
 	case "add":
 		return runProfileAdd(ctx, client, args[1:], deps)
 	case "rename":
-		if len(args) != 3 {
-			return usageError{"usage: tailmix profiles rename <profile> <new-profile>"}
-		}
-		newName := args[2]
-		result, err := client.PatchProfile(ctx, args[1], controlapi.PatchProfileRequest{Name: &newName})
+		rest := args[1:]
+		jsonOutput, err := takeBool(&rest, "--json")
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(deps.stdout, "Profile %q renamed to %q.\n", args[1], result.Name)
+		if len(rest) != 2 {
+			return usageError{"usage: tailmix profiles rename <profile> <new-profile> [--json]"}
+		}
+		newName := rest[1]
+		result, err := client.PatchProfile(ctx, rest[0], controlapi.PatchProfileRequest{Name: &newName})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return writeJSON(deps.stdout, result)
+		}
+		fmt.Fprintf(deps.stdout, "Profile %q renamed to %q.\n", rest[0], result.Name)
 		return nil
 	case "set":
 		return runProfileSet(ctx, client, args[1:], deps)
@@ -1899,6 +2028,9 @@ Flags:
   --config <path>     Import a usque config.json without contacting Cloudflare
   --dns <address>     Resolver for the profile (default 1.1.1.1)
   --transport <kind>  quic (default) or http2
+  --accept-tos        Skip the consent prompt: the caller has already accepted
+                      the Cloudflare Terms of Service
+  --json              Print the profile as JSON
 
 Registration asks for Terms of Service consent on this terminal before it calls
 the daemon. With --jwt -, the token is the first line of input and the consent
@@ -1907,7 +2039,7 @@ Delete an imported configuration file once the profile starts.
 `
 
 const versionHelp = `Usage:
-  tailmix version
+  tailmix version [--json]
 
 Shows client and server versions, source revisions, and full embedded Tailscale
 module versions. The server is shown as unavailable when tailmixd cannot be
@@ -1938,7 +2070,7 @@ const profilesHelp = `Usage:
   tailmix profiles list [--all] [--json]
   tailmix profiles show <profile> [--json]
   tailmix profiles add <profile> [options]
-  tailmix profiles rename <profile> <new-profile>
+  tailmix profiles rename <profile> <new-profile> [--json]
   tailmix profiles set <profile> --hostname <hostname> [--json]
   tailmix profiles enable <profile> [--json]
   tailmix profiles disable <profile> [--json]

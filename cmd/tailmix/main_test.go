@@ -24,6 +24,7 @@ type fakeManagementClient struct {
 	profile          controlapi.Profile
 	profileName      string
 	status           controlapi.Status
+	statusErr        error
 	daemonState      controlapi.DaemonState
 	daemonUp         bool
 	ipPatch          controlapi.PatchIPRoutesRequest
@@ -46,13 +47,15 @@ type fakeManagementClient struct {
 	warpCalls        int
 	warpProfile      controlapi.WarpProfile
 	added            []controlapi.AddProfileRequest
+	patchName        string
+	patchRequest     controlapi.PatchProfileRequest
 }
 
 func (f *fakeManagementClient) Version(context.Context) (tailmixversion.Meta, error) {
 	return f.serverVersion, f.versionErr
 }
 func (f *fakeManagementClient) Status(context.Context) (controlapi.Status, error) {
-	return f.status, nil
+	return f.status, f.statusErr
 }
 func (f *fakeManagementClient) SetDaemonUp(_ context.Context, up bool) (controlapi.DaemonState, error) {
 	f.daemonUp = up
@@ -79,7 +82,9 @@ func (f *fakeManagementClient) AddProfile(_ context.Context, request controlapi.
 	f.added = append(f.added, request)
 	return f.profile, nil
 }
-func (f *fakeManagementClient) PatchProfile(context.Context, string, controlapi.PatchProfileRequest) (controlapi.Profile, error) {
+func (f *fakeManagementClient) PatchProfile(_ context.Context, name string, request controlapi.PatchProfileRequest) (controlapi.Profile, error) {
+	f.patchName = name
+	f.patchRequest = request
 	return f.profile, nil
 }
 func (f *fakeManagementClient) ProfileAction(context.Context, string, string) (controlapi.Profile, error) {

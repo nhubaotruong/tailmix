@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Tailmix
+GenericName=Tailscale Network Mixer
+Comment=Join several Tailscale networks at once
+Exec=tailmix-gui
+Icon=io.github.nhubaotruong.TailmixGui
+Terminal=false
+Type=Application
+Categories=Network;Settings;
+Keywords=Tailscale;VPN;Network;Tailmix;
+StartupNotify=true

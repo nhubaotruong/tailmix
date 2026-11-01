@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -180,6 +181,55 @@ func TestWarpRegisterRejectsTwoCredentialSources(t *testing.T) {
 		testDependencies(client, &stdout, &stderr, nil))
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
+	}
+	if client.warpCalls != 0 {
+		t.Fatalf("apply calls = %d, want 0", client.warpCalls)
+	}
+}
+
+func TestWarpRegisterAcceptsTermsFlag(t *testing.T) {
+	client := &fakeManagementClient{warpProfile: controlapi.WarpProfile{Name: "cloudflare", Kind: "warp"}}
+	var stdout, stderr bytes.Buffer
+	deps := testDependencies(client, &stdout, &stderr, nil)
+	deps.stdin = strings.NewReader("")
+
+	code := runWithDependencies(context.Background(),
+		[]string{"warp", "register", "cloudflare", "--accept-tos", "--json"}, deps)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if client.warpCalls != 1 {
+		t.Fatalf("apply calls = %d, want 1", client.warpCalls)
+	}
+	var profile controlapi.WarpProfile
+	if err := json.Unmarshal(stdout.Bytes(), &profile); err != nil {
+		t.Fatalf("stdout = %q: %v", stdout.String(), err)
+	}
+	if profile.Name != "cloudflare" || profile.Kind != "warp" {
+		t.Fatalf("profile = %+v", profile)
+	}
+	if strings.Contains(stderr.String(), "Terms of Service") {
+		t.Fatalf("stderr prompts for consent: %q", stderr.String())
+	}
+}
+
+func TestWarpRegisterConsentFailureIsMachineReadable(t *testing.T) {
+	client := &fakeManagementClient{}
+	var stdout, stderr bytes.Buffer
+	deps := testDependencies(client, &stdout, &stderr, nil)
+	deps.stdin = strings.NewReader("")
+
+	code := runWithDependencies(context.Background(),
+		[]string{"warp", "register", "cloudflare", "--json"}, deps)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	var record errorRecord
+	if err := json.Unmarshal(stderr.Bytes(), &record); err != nil {
+		t.Fatalf("stderr = %q, want one JSON record: %v", stderr.String(), err)
+	}
+	if record.Code != "consent_required" {
+		t.Fatalf("code = %q, want consent_required", record.Code)
 	}
 	if client.warpCalls != 0 {
 		t.Fatalf("apply calls = %d, want 0", client.warpCalls)
