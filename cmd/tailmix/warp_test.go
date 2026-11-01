@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -183,5 +184,47 @@ func TestWarpRegisterRejectsTwoCredentialSources(t *testing.T) {
 	}
 	if client.warpCalls != 0 {
 		t.Fatalf("apply calls = %d, want 0", client.warpCalls)
+	}
+}
+
+func TestWarpRegisterAcceptsTermsFlag(t *testing.T) {
+	client := &fakeManagementClient{warpProfile: controlapi.WarpProfile{Name: "cloudflare", Kind: "warp"}}
+	var stdout, stderr bytes.Buffer
+	deps := testDependencies(client, &stdout, &stderr, nil)
+	deps.stdin = strings.NewReader("")
+
+	code := runWithDependencies(context.Background(),
+		[]string{"warp", "register", "cloudflare", "--accept-tos", "--json"}, deps)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if client.warpCalls != 1 {
+		t.Fatalf("apply calls = %d, want 1", client.warpCalls)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(stdout.String()), "{") {
+		t.Fatalf("stdout = %q, want JSON", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "Terms of Service") {
+		t.Fatalf("stderr prompts for consent: %q", stderr.String())
+	}
+}
+
+func TestWarpRegisterConsentFailureIsMachineReadable(t *testing.T) {
+	client := &fakeManagementClient{}
+	var stdout, stderr bytes.Buffer
+	deps := testDependencies(client, &stdout, &stderr, nil)
+	deps.stdin = strings.NewReader("")
+
+	code := runWithDependencies(context.Background(),
+		[]string{"warp", "register", "cloudflare", "--json"}, deps)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	var record errorRecord
+	if err := json.Unmarshal(stderr.Bytes(), &record); err != nil {
+		t.Fatalf("stderr = %q, want one JSON record: %v", stderr.String(), err)
+	}
+	if record.Code != "consent_required" {
+		t.Fatalf("code = %q, want consent_required", record.Code)
 	}
 }

@@ -24,6 +24,7 @@ type fakeManagementClient struct {
 	profile          controlapi.Profile
 	profileName      string
 	status           controlapi.Status
+	statusErr        error
 	daemonState      controlapi.DaemonState
 	daemonUp         bool
 	ipPatch          controlapi.PatchIPRoutesRequest
@@ -52,7 +53,7 @@ func (f *fakeManagementClient) Version(context.Context) (tailmixversion.Meta, er
 	return f.serverVersion, f.versionErr
 }
 func (f *fakeManagementClient) Status(context.Context) (controlapi.Status, error) {
-	return f.status, nil
+	return f.status, f.statusErr
 }
 func (f *fakeManagementClient) SetDaemonUp(_ context.Context, up bool) (controlapi.DaemonState, error) {
 	f.daemonUp = up
