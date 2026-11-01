@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Status {
     pub state: String,
@@ -16,7 +16,7 @@ pub struct Status {
     pub search_domains: SearchDomains,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Profile {
     pub id: String,
@@ -78,7 +78,7 @@ impl Profile {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct IpRoutes {
     pub accept_all_profiles: Vec<AcceptAllProfile>,
@@ -88,7 +88,7 @@ pub struct IpRoutes {
     pub reconcile_error: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AcceptAllProfile {
     pub profile_id: String,
@@ -97,7 +97,7 @@ pub struct AcceptAllProfile {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct IpRouteBinding {
     pub prefix: String,
@@ -112,7 +112,7 @@ pub struct IpRouteBinding {
     pub override_profile_name: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AvailableIpRoute {
     pub prefix: String,
@@ -121,7 +121,7 @@ pub struct AvailableIpRoute {
     pub primary_router: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExitNodes {
     pub selected: Option<SelectedExitNode>,
@@ -129,7 +129,7 @@ pub struct ExitNodes {
     pub reconcile_error: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SelectedExitNode {
     pub profile_id: String,
@@ -143,7 +143,7 @@ pub struct SelectedExitNode {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AvailableExitNode {
     pub profile_id: String,
@@ -155,7 +155,7 @@ pub struct AvailableExitNode {
     pub location: Option<ExitNodeLocation>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExitNodeLocation {
     pub country: String,
@@ -176,7 +176,7 @@ impl ExitNodeLocation {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DnsRoutes {
     pub accept_all_profiles: Vec<AcceptAllProfile>,
@@ -187,7 +187,7 @@ pub struct DnsRoutes {
     pub reconcile_error: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DnsRouteBinding {
     pub domain: String,
@@ -203,7 +203,7 @@ pub struct DnsRouteBinding {
     pub override_profile_name: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AvailableDnsRoute {
     pub domain: String,
@@ -213,13 +213,13 @@ pub struct AvailableDnsRoute {
     pub resolvers: Vec<DnsResolver>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DnsResolver {
     pub addr: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SearchDomains {
     pub desired: Vec<String>,
@@ -229,7 +229,7 @@ pub struct SearchDomains {
     pub reconcile_error: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InstalledSearchDomain {
     pub domain: String,
@@ -237,14 +237,14 @@ pub struct InstalledSearchDomain {
     pub profile_name: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WaitingSearchDomain {
     pub domain: String,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AvailableSearchDomain {
     pub domain: String,
@@ -252,7 +252,7 @@ pub struct AvailableSearchDomain {
     pub profile_name: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UpdateStatus {
     pub enabled: bool,
@@ -263,7 +263,7 @@ pub struct UpdateStatus {
     pub last_error: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WireGuardProfile {
     pub name: String,
@@ -277,7 +277,7 @@ pub struct WireGuardProfile {
     pub peers: Vec<WireGuardPeer>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WireGuardPeer {
     pub name: String,

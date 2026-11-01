@@ -172,6 +172,9 @@ pub fn detail(state: &Shared, name: &str) -> gtk::Widget {
                 let args = ["wireguard".to_string(), "show".into(), name.clone()];
                 let fetched = gtk::gio::spawn_blocking(move || bridge.read_cli(&args)).await;
                 app::clear(&peers_list);
+                // The summary rows are rebuilt every poll; clear them or they pile up.
+                app::clear(&summary_list);
+                summary_list.append(&shields);
                 let profile = match fetched {
                     Ok(Ok(text)) => match serde_json::from_str::<WireGuardProfile>(&text) {
                         Ok(profile) => profile,

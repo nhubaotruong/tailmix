@@ -1,7 +1,6 @@
 //! Profiles view: the list of tailnets and one detail page per profile.
 
 use adw::prelude::*;
-use gtk::glib;
 use std::rc::Rc;
 
 use crate::app::{self, Shell};
@@ -193,7 +192,7 @@ fn detail(state: &Shared, shell: &Rc<Shell>, name: &str) -> gtk::Widget {
             accept_all.set_active(profile.accept_all_routes);
             accept_all_dns.set_active(profile.accept_all_dns_routes);
             loading.set(false);
-            wireguard_row.set_visible(profile.kind != "tailscale");
+            wireguard_row.set_visible(profile.kind_label() != "tailscale");
             toggle.set_title(if profile.enabled {
                 "Disable profile"
             } else {
@@ -472,9 +471,4 @@ fn add_profile(state: &Shared, parent: &impl IsA<gtk::Widget>) {
     });
 
     form.present(parent);
-}
-
-#[allow(dead_code)]
-fn keep_glib() {
-    let _ = glib::MainContext::default();
 }

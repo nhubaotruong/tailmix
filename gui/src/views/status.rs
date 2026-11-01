@@ -17,6 +17,8 @@ pub fn build(state: &Shared) -> gtk::Widget {
         .valign(gtk::Align::Center)
         .active(true)
         .build();
+    // Refresh sets the switch too; without this guard each poll would run `tailmix up`.
+    let loading = Rc::new(std::cell::Cell::new(false));
     daemon_row.add_suffix(&switch);
     daemon_row.set_activatable_widget(Some(&switch));
     daemon_list.append(&daemon_row);
@@ -36,6 +38,7 @@ pub fn build(state: &Shared) -> gtk::Widget {
         let state = Rc::clone(state);
         let daemon_row = daemon_row.clone();
         let switch = switch.clone();
+        let loading = Rc::clone(&loading);
         let profiles_list = profiles_list.clone();
         let routing_list = routing_list.clone();
         move || {
@@ -55,7 +58,9 @@ pub fn build(state: &Shared) -> gtk::Widget {
             };
             daemon_row.set_title(&title);
             daemon_row.set_subtitle(&subtitle);
+            loading.set(true);
             switch.set_active(up);
+            loading.set(false);
 
             app::clear(&profiles_list);
             match core.status.as_ref() {
@@ -121,7 +126,11 @@ pub fn build(state: &Shared) -> gtk::Widget {
     state.subscribe(refresh);
 
     let state_up = Rc::clone(state);
+    let loading = Rc::clone(&loading);
     switch.connect_state_notify(move |switch| {
+        if loading.get() {
+            return;
+        }
         let args = vec![if switch.is_active() { "up" } else { "down" }.to_string()];
         state_up.mutate(args, None);
     });

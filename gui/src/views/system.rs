@@ -239,9 +239,14 @@ mod tests {
 
     #[test]
     fn sends_interactive_commands_to_a_terminal() {
+        assert_eq!(
+            interactive_reason(&words("status --web")).as_deref(),
+            Some(
+                "Run this in a terminal, it needs a prompt or a browser:\ntailmix ts status --web"
+            )
+        );
         assert!(interactive_reason(&words("login")).is_some());
         assert!(interactive_reason(&words("up --accept-routes")).is_some());
-        assert!(interactive_reason(&words("status --web")).is_some());
     }
 
     #[test]

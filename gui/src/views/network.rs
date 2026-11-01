@@ -221,7 +221,14 @@ fn profiles(state: &Shared) -> Vec<Profile> {
         .core()
         .status
         .as_ref()
-        .map(|status| status.profiles.clone())
+        .map(|status| {
+            status
+                .profiles
+                .iter()
+                .filter(|profile| !profile.removed)
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default()
 }
 

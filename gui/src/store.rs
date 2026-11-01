@@ -18,7 +18,7 @@ use adw::gio;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 pub struct Core {
     pub status: Option<Status>,
     pub update: Option<UpdateStatus>,
@@ -31,6 +31,7 @@ pub struct AppState {
     core: RefCell<Core>,
     listeners: RefCell<Vec<Rc<dyn Fn()>>>,
     polling: Cell<bool>,
+    refresh_wanted: Cell<bool>,
     pub mutating: Cell<bool>,
     toast_sink: RefCell<Option<ToastSink>>,
 }
@@ -51,6 +52,7 @@ impl AppState {
             core: RefCell::new(Core::default()),
             listeners: RefCell::new(Vec::new()),
             polling: Cell::new(false),
+            refresh_wanted: Cell::new(false),
             mutating: Cell::new(false),
             toast_sink: RefCell::new(None),
         })
@@ -82,6 +84,8 @@ impl AppState {
     /// Reads status and update state in the background, then repaints.
     pub fn refresh(self: &Shared) {
         if self.polling.get() {
+            // A change finished while a poll was in flight; run again after it.
+            self.refresh_wanted.set(true);
             return;
         }
         self.polling.set(true);
@@ -95,28 +99,35 @@ impl AppState {
             })
             .await;
             state.polling.set(false);
-            let Ok((status, update)) = result else {
-                return;
-            };
-            {
-                let mut core = state.core.borrow_mut();
-                match status {
-                    Ok(status) => {
-                        core.status = Some(status);
-                        core.failure = None;
-                    }
-                    Err(err) => {
-                        if err.kind == FailureKind::Unavailable {
-                            core.status = None;
+            if let Ok((status, update)) = result {
+                let changed = {
+                    let mut core = state.core.borrow_mut();
+                    let before = core.clone();
+                    match status {
+                        Ok(status) => {
+                            core.status = Some(status);
+                            core.failure = None;
                         }
-                        core.failure = Some(err);
+                        Err(err) => {
+                            if err.kind == FailureKind::Unavailable {
+                                core.status = None;
+                            }
+                            core.failure = Some(err);
+                        }
                     }
-                }
-                if let Ok(update) = update {
-                    core.update = Some(update);
+                    if let Ok(update) = update {
+                        core.update = Some(update);
+                    }
+                    *core != before
+                };
+                // Repainting an unchanged tree resets focus and scroll every poll.
+                if changed {
+                    state.notify();
                 }
             }
-            state.notify();
+            if state.refresh_wanted.take() {
+                state.refresh();
+            }
         });
     }
 
@@ -135,6 +146,7 @@ impl AppState {
     /// Runs one mutation under pkexec, then refreshes.
     pub fn mutate(self: &Shared, args: Vec<String>, stdin: Option<String>) {
         if self.mutating.get() {
+            self.toast("A change is still running");
             return;
         }
         self.mutating.set(true);
@@ -150,6 +162,7 @@ impl AppState {
     /// Starts the daemon through systemd, then refreshes.
     pub fn start_daemon(self: &Shared) {
         if self.mutating.get() {
+            self.toast("A change is still running");
             return;
         }
         self.mutating.set(true);

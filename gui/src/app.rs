@@ -1,5 +1,5 @@
 use adw::prelude::*;
-use gtk::{gdk, glib};
+use gtk::gdk;
 use std::rc::Rc;
 
 pub const APP_ID: &str = "io.github.nhubaotruong.TailmixGui";
@@ -10,8 +10,6 @@ pub struct Shell {
     pub stack: adw::ViewStack,
     pub nav: adw::NavigationView,
     pub toasts: adw::ToastOverlay,
-    header: adw::HeaderBar,
-    switcher_bar: adw::ViewSwitcherBar,
 }
 
 pub fn install_css() {
@@ -122,8 +120,6 @@ fn build(app: &adw::Application) -> Shell {
         stack,
         nav,
         toasts,
-        header,
-        switcher_bar,
     }
 }
 
@@ -161,19 +157,8 @@ impl Shell {
             .unwrap_or("Tailmix");
         self.window.set_title(Some(title));
     }
-
-    #[allow(dead_code)]
-    pub fn header(&self) -> &adw::HeaderBar {
-        &self.header
-    }
-
-    #[allow(dead_code)]
-    pub fn switcher_bar(&self) -> &adw::ViewSwitcherBar {
-        &self.switcher_bar
-    }
 }
 
-/// Standard empty state for a view that has nothing to show yet.
 /// Scrolled, width-clamped page body, the shape every view uses.
 pub fn page_body() -> (gtk::ScrolledWindow, gtk::Box) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
@@ -232,13 +217,5 @@ pub fn apply_color_scheme(scheme: &str) {
         "light" => adw::ColorScheme::ForceLight,
         "dark" => adw::ColorScheme::ForceDark,
         _ => adw::ColorScheme::Default,
-    });
-}
-
-#[allow(dead_code)]
-pub fn spawn_app_quit(app: &adw::Application) {
-    let app = app.clone();
-    glib::spawn_future_local(async move {
-        app.quit();
     });
 }

@@ -29,7 +29,7 @@ pub enum FailureKind {
     Failed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Failure {
     pub kind: FailureKind,
     pub code: String,
@@ -137,11 +137,7 @@ impl Bridge {
         }
         let record: ErrorRecord = serde_json::from_str(body).unwrap_or_default();
         Err(Failure::new(
-            match status {
-                401 | 403 => FailureKind::Denied,
-                503 => FailureKind::Unavailable,
-                _ => FailureKind::Failed,
-            },
+            kind_for_status(status),
             if record.code.is_empty() {
                 "internal"
             } else {
@@ -153,6 +149,17 @@ impl Bridge {
                 record.message
             },
         ))
+    }
+
+    /// The `tailmix` binary this app drives.
+    fn command(&self) -> Result<PathBuf, Failure> {
+        self.tailmix.clone().ok_or_else(|| {
+            Failure::new(
+                FailureKind::Failed,
+                "internal",
+                "the tailmix command is not installed or not on PATH",
+            )
+        })
     }
 
     /// Starts the daemon unit. `tailmix up` needs a live daemon, so the
@@ -193,13 +200,7 @@ impl Bridge {
     ///
     /// `stdin` carries secrets; it is the only channel pkexec leaves open.
     pub fn mutate(&self, args: &[String], stdin: Option<&str>) -> Result<String, Failure> {
-        let tailmix = self.tailmix.clone().ok_or_else(|| {
-            Failure::new(
-                FailureKind::Failed,
-                "internal",
-                "the tailmix command is not installed or not on PATH",
-            )
-        })?;
+        let tailmix = self.command()?;
         let mut command = Command::new("pkexec");
         command
             .arg("--disable-internal-agent")
@@ -243,13 +244,7 @@ impl Bridge {
     /// Runs `tailmix <args>` unchanged, for the Tailscale passthrough where
     /// every argument belongs to the upstream command.
     pub fn run_raw(&self, args: &[String]) -> Result<String, Failure> {
-        let tailmix = self.tailmix.clone().ok_or_else(|| {
-            Failure::new(
-                FailureKind::Failed,
-                "internal",
-                "the tailmix command is not installed or not on PATH",
-            )
-        })?;
+        let tailmix = self.command()?;
         let output = Command::new(&tailmix)
             .args(args)
             .stdin(Stdio::null())
@@ -275,13 +270,7 @@ impl Bridge {
     /// Runs `tailmix <args> --json` as the current user, for reads the daemon
     /// socket cannot answer.
     pub fn read_cli(&self, args: &[String]) -> Result<String, Failure> {
-        let tailmix = self.tailmix.clone().ok_or_else(|| {
-            Failure::new(
-                FailureKind::Failed,
-                "internal",
-                "the tailmix command is not installed or not on PATH",
-            )
-        })?;
+        let tailmix = self.command()?;
         let output = Command::new(&tailmix)
             .args(args)
             .arg("--json")
@@ -298,26 +287,7 @@ impl Bridge {
             return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let record: Option<ErrorRecord> = stderr
-            .lines()
-            .rev()
-            .find_map(|line| serde_json::from_str(line.trim()).ok());
-        Err(match record {
-            Some(record) => Failure::new(
-                if record.code == "daemon_unavailable" {
-                    FailureKind::Unavailable
-                } else {
-                    FailureKind::Failed
-                },
-                &record.code,
-                record.message,
-            ),
-            None => Failure::new(
-                FailureKind::Failed,
-                "internal",
-                last_line(&stderr).unwrap_or("tailmix reported an error."),
-            ),
-        })
+        Err(failure_from_stderr(None, &stderr))
     }
 }
 
@@ -329,16 +299,29 @@ fn kind_with_code(kind: FailureKind, code: &str) -> FailureKind {
     }
 }
 
+fn kind_for_status(status: u16) -> FailureKind {
+    match status {
+        401 | 403 => FailureKind::Denied,
+        503 => FailureKind::Unavailable,
+        _ => FailureKind::Failed,
+    }
+}
+
 fn last_line(text: &str) -> Option<&str> {
     text.lines().map(str::trim).rfind(|line| !line.is_empty())
 }
 
-/// Maps a failed `pkexec tailmix … --json` run to the message the app shows.
-fn failure_from_stderr(code: Option<i32>, stderr: &str) -> Failure {
-    let record: Option<ErrorRecord> = stderr
+/// The trailing JSON error record a `--json` command writes to stderr.
+fn error_record(stderr: &str) -> Option<ErrorRecord> {
+    stderr
         .lines()
         .rev()
-        .find_map(|line| serde_json::from_str(line.trim()).ok());
+        .find_map(|line| serde_json::from_str(line.trim()).ok())
+}
+
+/// Maps a failed `pkexec tailmix … --json` run to the message the app shows.
+fn failure_from_stderr(code: Option<i32>, stderr: &str) -> Failure {
+    let record = error_record(stderr);
     let (kind, fallback) = match code {
         Some(126) => (
             FailureKind::Denied,
