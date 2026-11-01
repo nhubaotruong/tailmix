@@ -1,5 +1,6 @@
 use adw::prelude::*;
 use gtk::{gdk, glib};
+use std::rc::Rc;
 
 pub const APP_ID: &str = "io.github.nhubaotruong.TailmixGui";
 
@@ -10,7 +11,6 @@ pub struct Shell {
     pub nav: adw::NavigationView,
     pub toasts: adw::ToastOverlay,
     header: adw::HeaderBar,
-    switcher: adw::ViewSwitcher,
     switcher_bar: adw::ViewSwitcherBar,
 }
 
@@ -27,8 +27,30 @@ pub fn install_css() {
 }
 
 pub fn activate(app: &adw::Application) {
-    let shell = build(app);
+    let shell = Rc::new(build(app));
+    let state = crate::store::new();
+    state.set_toast_sink({
+        let shell = Rc::clone(&shell);
+        move |message| shell.toast(message)
+    });
+
+    let status = crate::views::status::build(&state);
+    shell.add_view("status", "Status", "network-wired-symbolic", &status);
+    let profiles = crate::views::profiles::build(&state, &shell);
+    shell.add_view("profiles", "Profiles", "avatar-default-symbolic", &profiles);
+    let network = crate::views::network::build(&state, &shell);
+    shell.add_view("network", "Network", "network-workgroup-symbolic", &network);
+    let system = crate::views::system::build(&state, &shell);
+    shell.add_view("system", "System", "emblem-system-symbolic", &system);
+
+    shell.stack.connect_visible_child_notify({
+        let shell = Rc::clone(&shell);
+        move |_| shell.sync_title()
+    });
+    shell.sync_title();
+    state.start_polling(shell.window.clone().upcast());
     shell.window.present();
+    state.refresh();
 }
 
 fn build(app: &adw::Application) -> Shell {
@@ -101,7 +123,6 @@ fn build(app: &adw::Application) -> Shell {
         nav,
         toasts,
         header,
-        switcher,
         switcher_bar,
     }
 }
@@ -112,16 +133,9 @@ impl Shell {
             .add_titled_with_icon(child, Some(name), title, icon);
     }
 
-    pub fn set_view(&self, name: &str) {
-        self.stack.set_visible_child_name(name);
-    }
-
-    pub fn view(&self, name: &str) -> Option<gtk::Widget> {
-        self.stack.child_by_name(name)
-    }
-
-    pub fn push(&self, page: &adw::NavigationPage) {
-        self.nav.push(page);
+    /// Pushes a plain widget as a new page with its own header title.
+    pub fn push_page(&self, child: &impl IsA<gtk::Widget>, title: &str) {
+        self.nav.push(&adw::NavigationPage::new(child, title));
     }
 
     pub fn pop(&self) {
@@ -160,17 +174,6 @@ impl Shell {
 }
 
 /// Standard empty state for a view that has nothing to show yet.
-pub fn status_page(title: &str, description: &str, icon: &str) -> adw::StatusPage {
-    let page = adw::StatusPage::builder()
-        .title(title)
-        .description(description)
-        .icon_name(icon)
-        .vexpand(true)
-        .build();
-    page.set_hexpand(true);
-    page
-}
-
 /// Scrolled, width-clamped page body, the shape every view uses.
 pub fn page_body() -> (gtk::ScrolledWindow, gtk::Box) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
@@ -211,6 +214,15 @@ pub fn row(title: &str, subtitle: &str) -> adw::ActionRow {
         row.set_subtitle(subtitle);
     }
     row
+}
+
+/// Empties a list before it is rebuilt from fresh state.
+pub fn clear(list: &gtk::ListBox) {
+    let mut child = list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        list.remove(&widget);
+    }
 }
 
 /// Applies the colour scheme the preferences ask for.

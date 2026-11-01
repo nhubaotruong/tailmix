@@ -1,38 +1,53 @@
-# tailmix GUI
+# tailmix-gui
 
-A libadwaita front end for the tailmix daemon. It is a supplement to the
-`tailmix` and `tailmixd` command line tools, not a replacement: both read and
-write the same state, and the GUI never talks to a tailnet directly.
+A GNOME app for tailmix, built with Rust, GTK 4, and libadwaita.
 
-## How it works
+It is a supplement to the `tailmix` command line, not a replacement. Both drive
+the same `tailmixd` daemon and read the same state, so a change made in either
+place shows up in the other on the next refresh.
 
-The GUI has no privileged components of its own.
+The crate lives in `gui/` for now and moves to its own repository later.
 
-- Reads go straight to the daemon's unix socket (`/var/run/tailmix/tailmixd.sock`,
-  or `$TAILMIX_SOCKET_DIR`) with plain HTTP over the socket.
-- Policy changes run the installed `tailmix` binary through `pkexec`, so every
-  change goes through the same CLI code path and the same polkit prompt a
-  terminal user sees.
-- The daemon is polled every two seconds while a window is visible.
+## How it talks to tailmix
+
+- Reads go straight to the daemon's unix socket (`$TAILMIX_SOCKET_DIR` or
+  `/var/run/tailmix/tailmixd.sock`), which allows `GET` from any user.
+- Every change runs the installed `tailmix` binary through
+  `pkexec --disable-internal-agent`, because the daemon rejects mutations from
+  non-root peers. Polkit asks for authorisation once per change.
+- No new privileged surface is added: the app never runs as root and never
+  writes outside the user's session.
 
 ## Build
 
-Requires Rust 1.83 or newer, GTK 4.10 or newer, and libadwaita 1.6 or newer with
-their development headers.
+Needs `gtk4-devel`, `libadwaita-devel` (1.6 or newer), and a Rust toolchain
+(1.83 or newer). On an immutable Fedora host, build inside a container:
 
 ```sh
-make gui            # cargo build --release --manifest-path gui/Cargo.toml
-sudo make install-gui
+podman run -d --name tailmix-gui-build -v "$PWD:/src:Z" -w /src \
+  registry.fedoraproject.org/fedora:45 sleep infinity
+podman exec tailmix-gui-build dnf install -y gcc pkg-config gtk4-devel \
+  libadwaita-devel cargo rust clippy rustfmt
+podman exec -w /src/gui tailmix-gui-build cargo build
 ```
 
-`make install-gui` installs the binary, the desktop entry, the app icon, and the
-AppStream metadata under `PREFIX` (default `/usr/local`).
-
-## Tests
+## Run
 
 ```sh
-cargo test --manifest-path gui/Cargo.toml
+./target/debug/tailmix-gui
 ```
 
-Nothing in this directory is part of the Go module, so `go build ./...` and the
-release archive do not include the GUI.
+Start it as your desktop user. It refuses to run as root.
+
+## Check
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+## Install
+
+`make install-gui` copies the binary, the desktop entry, the metainfo file, and
+the icon into `$(PREFIX)`.
