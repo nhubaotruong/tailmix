@@ -1,9 +1,0 @@
-/* Only what Adwaita does not already provide. Prefer its style classes. */
-
-.tailmix-mono {
-  font-family: monospace;
-}
-
-.tailmix-peers {
-  font-feature-settings: "tnum";
-}
