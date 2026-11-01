@@ -196,7 +196,7 @@ pub fn build(state: &Shared, _shell: &Rc<Shell>) -> gtk::Widget {
     };
 
     refresh();
-    state.subscribe(refresh);
+    state.subscribe(&scroller, refresh);
     scroller.upcast()
 }
 

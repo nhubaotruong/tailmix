@@ -83,7 +83,7 @@ pub fn build(state: &Shared, shell: &Rc<Shell>) -> gtk::Widget {
     };
 
     refresh();
-    state.subscribe(refresh);
+    state.subscribe(&scroller, refresh);
     scroller.upcast()
 }
 
@@ -202,20 +202,24 @@ fn detail(state: &Shared, shell: &Rc<Shell>, name: &str) -> gtk::Widget {
     };
 
     refresh();
-    state.subscribe(refresh);
+    state.subscribe(&scroller, refresh);
 
     {
         let state = Rc::clone(state);
         let name = name.to_string();
+        let shell = Rc::clone(shell);
         rename.connect_activated(move |row| {
             let state = Rc::clone(&state);
+            let shell = Rc::clone(&shell);
             let name = name.clone();
             let original = name.clone();
             dialogs::prompt(row, "Rename profile", "Name", &name, move |new_name| {
                 if new_name.trim().is_empty() || new_name == original {
                     return false;
                 }
-                state.mutate(
+                let shell = Rc::clone(&shell);
+                // The page is bound to the old name, so leave it after a rename.
+                state.mutate_with(
                     vec![
                         "profiles".into(),
                         "rename".into(),
@@ -223,6 +227,7 @@ fn detail(state: &Shared, shell: &Rc<Shell>, name: &str) -> gtk::Widget {
                         new_name,
                     ],
                     None,
+                    move || shell.pop(),
                 );
                 true
             });
@@ -267,7 +272,6 @@ fn detail(state: &Shared, shell: &Rc<Shell>, name: &str) -> gtk::Widget {
                     }
                 },
             );
-            row.clipboard().set_text(&url);
         });
     }
 
@@ -307,8 +311,12 @@ fn detail(state: &Shared, shell: &Rc<Shell>, name: &str) -> gtk::Widget {
                 "The profile stops and its routes are withdrawn. Local state is kept on disk.",
                 "Remove",
                 move || {
-                    state.mutate(vec!["profiles".into(), "remove".into(), name.clone()], None);
-                    shell.pop();
+                    let shell = Rc::clone(&shell);
+                    state.mutate_with(
+                        vec!["profiles".into(), "remove".into(), name.clone()],
+                        None,
+                        move || shell.pop(),
+                    );
                 },
             );
         });
@@ -332,16 +340,18 @@ fn detail(state: &Shared, shell: &Rc<Shell>, name: &str) -> gtk::Widget {
                 &format!("The profile stops and {state_dir} is deleted. This cannot be undone."),
                 "Delete",
                 move || {
-                    state.mutate(
+                    let shell = Rc::clone(&shell);
+                    state.mutate_with(
                         vec![
                             "profiles".into(),
                             "remove".into(),
                             "--purge".into(),
+                            "--yes".into(),
                             name.clone(),
                         ],
                         None,
+                        move || shell.pop(),
                     );
-                    shell.pop();
                 },
             );
         });

@@ -123,7 +123,7 @@ pub fn build(state: &Shared) -> gtk::Widget {
     };
 
     refresh();
-    state.subscribe(refresh);
+    state.subscribe(&scroller, refresh);
 
     let state_up = Rc::clone(state);
     let loading = Rc::clone(&loading);

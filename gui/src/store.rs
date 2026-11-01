@@ -29,7 +29,8 @@ pub struct Core {
 pub struct AppState {
     pub bridge: Bridge,
     core: RefCell<Core>,
-    listeners: RefCell<Vec<Rc<dyn Fn()>>>,
+    listeners: ListenerList,
+    next_listener: Cell<u64>,
     polling: Cell<bool>,
     refresh_wanted: Cell<bool>,
     pub mutating: Cell<bool>,
@@ -37,6 +38,7 @@ pub struct AppState {
 }
 
 type ToastSink = Rc<dyn Fn(&str)>;
+type ListenerList = Rc<RefCell<Vec<(u64, Rc<dyn Fn()>)>>>;
 
 pub type Shared = Rc<AppState>;
 
@@ -50,7 +52,8 @@ impl AppState {
         Rc::new(AppState {
             bridge: Bridge::discover(),
             core: RefCell::new(Core::default()),
-            listeners: RefCell::new(Vec::new()),
+            listeners: Rc::new(RefCell::new(Vec::new())),
+            next_listener: Cell::new(0),
             polling: Cell::new(false),
             refresh_wanted: Cell::new(false),
             mutating: Cell::new(false),
@@ -70,12 +73,24 @@ impl AppState {
             .and_then(|status| status.profiles.iter().find(|p| p.name == name).cloned())
     }
 
-    pub fn subscribe(&self, listener: impl Fn() + 'static) {
-        self.listeners.borrow_mut().push(Rc::new(listener));
+    /// Registers a repaint callback that is dropped with `owner`.
+    pub fn subscribe(&self, owner: &impl IsA<gtk::Widget>, listener: impl Fn() + 'static) {
+        let id = self.next_listener.get();
+        self.next_listener.set(id + 1);
+        self.listeners.borrow_mut().push((id, Rc::new(listener)));
+        let listeners = Rc::clone(&self.listeners);
+        owner.connect_destroy(move |_| {
+            listeners.borrow_mut().retain(|(kept, _)| *kept != id);
+        });
     }
 
     pub fn notify(&self) {
-        let listeners: Vec<Rc<dyn Fn()>> = self.listeners.borrow().clone();
+        let listeners: Vec<Rc<dyn Fn()>> = self
+            .listeners
+            .borrow()
+            .iter()
+            .map(|(_, listener)| Rc::clone(listener))
+            .collect();
         for listener in listeners {
             listener();
         }
@@ -109,9 +124,8 @@ impl AppState {
                             core.failure = None;
                         }
                         Err(err) => {
-                            if err.kind == FailureKind::Unavailable {
-                                core.status = None;
-                            }
+                            // A stale snapshot shown as healthy hides a broken daemon.
+                            core.status = None;
                             core.failure = Some(err);
                         }
                     }
@@ -145,6 +159,16 @@ impl AppState {
 
     /// Runs one mutation under pkexec, then refreshes.
     pub fn mutate(self: &Shared, args: Vec<String>, stdin: Option<String>) {
+        self.mutate_with(args, stdin, || {});
+    }
+
+    /// Runs one mutation, then calls `after` only when it succeeded.
+    pub fn mutate_with(
+        self: &Shared,
+        args: Vec<String>,
+        stdin: Option<String>,
+        after: impl Fn() + 'static,
+    ) {
         if self.mutating.get() {
             self.toast("A change is still running");
             return;
@@ -152,10 +176,10 @@ impl AppState {
         self.mutating.set(true);
         let bridge = self.bridge.clone();
         let state = Rc::clone(self);
-        let success = "Change applied";
+        let after: Rc<dyn Fn()> = Rc::new(after);
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(move || bridge.mutate(&args, stdin.as_deref())).await;
-            state.finish(result, success);
+            state.finish(result, "Change applied", after);
         });
     }
 
@@ -170,7 +194,7 @@ impl AppState {
         let state = Rc::clone(self);
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(move || bridge.start_daemon()).await;
-            state.finish(result, "tailmixd started");
+            state.finish(result, "tailmixd started", Rc::new(|| {}));
         });
     }
 
@@ -178,8 +202,10 @@ impl AppState {
         self: &Shared,
         result: Result<Result<String, Failure>, Box<dyn std::any::Any + Send>>,
         success: &str,
+        after: Rc<dyn Fn()>,
     ) {
         self.mutating.set(false);
+        let applied = matches!(result, Ok(Ok(_)));
         let message = match result {
             Ok(Ok(_)) => success.to_string(),
             Ok(Err(err)) => failure_message(&err),
@@ -191,6 +217,9 @@ impl AppState {
             state.refresh();
             state.notify();
             state.toast(&message);
+            if applied {
+                after();
+            }
         });
     }
 

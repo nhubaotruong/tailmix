@@ -9,6 +9,7 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase", default)]
 pub struct Status {
     pub state: String,
+    #[serde(deserialize_with = "null_default")]
     pub profiles: Vec<Profile>,
     pub ip_routes: IpRoutes,
     pub exit_nodes: ExitNodes,
@@ -34,6 +35,7 @@ pub struct Profile {
     pub last_connected: String,
     pub magic_dns_suffix: String,
     pub self_dns_name: String,
+    #[serde(deserialize_with = "null_default")]
     pub self_ips: Vec<String>,
     pub peer_count: i64,
     pub shields_up: bool,
@@ -81,9 +83,13 @@ impl Profile {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct IpRoutes {
+    #[serde(deserialize_with = "null_default")]
     pub accept_all_profiles: Vec<AcceptAllProfile>,
+    #[serde(deserialize_with = "null_default")]
     pub bindings: Vec<IpRouteBinding>,
+    #[serde(deserialize_with = "null_default")]
     pub imported: Vec<IpRouteBinding>,
+    #[serde(deserialize_with = "null_default")]
     pub available: Vec<AvailableIpRoute>,
     pub reconcile_error: String,
 }
@@ -125,6 +131,7 @@ pub struct AvailableIpRoute {
 #[serde(rename_all = "camelCase", default)]
 pub struct ExitNodes {
     pub selected: Option<SelectedExitNode>,
+    #[serde(deserialize_with = "null_default")]
     pub available: Vec<AvailableExitNode>,
     pub reconcile_error: String,
 }
@@ -150,6 +157,7 @@ pub struct AvailableExitNode {
     pub profile_name: String,
     pub node_id: String,
     pub dns_name: String,
+    #[serde(deserialize_with = "null_default")]
     pub ips: Vec<String>,
     pub online: bool,
     pub location: Option<ExitNodeLocation>,
@@ -179,10 +187,15 @@ impl ExitNodeLocation {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DnsRoutes {
+    #[serde(deserialize_with = "null_default")]
     pub accept_all_profiles: Vec<AcceptAllProfile>,
+    #[serde(deserialize_with = "null_default")]
     pub bindings: Vec<DnsRouteBinding>,
+    #[serde(deserialize_with = "null_default")]
     pub imported: Vec<DnsRouteBinding>,
+    #[serde(deserialize_with = "null_default")]
     pub automatic: Vec<DnsRouteBinding>,
+    #[serde(deserialize_with = "null_default")]
     pub available: Vec<AvailableDnsRoute>,
     pub reconcile_error: String,
 }
@@ -198,6 +211,7 @@ pub struct DnsRouteBinding {
     pub state: String,
     pub reason: String,
     pub covering_route: String,
+    #[serde(deserialize_with = "null_default")]
     pub resolvers: Vec<DnsResolver>,
     pub overridden_by: String,
     pub override_profile_name: String,
@@ -210,6 +224,7 @@ pub struct AvailableDnsRoute {
     pub profile_id: String,
     pub profile_name: String,
     pub source: String,
+    #[serde(deserialize_with = "null_default")]
     pub resolvers: Vec<DnsResolver>,
 }
 
@@ -222,9 +237,13 @@ pub struct DnsResolver {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SearchDomains {
+    #[serde(deserialize_with = "null_default")]
     pub desired: Vec<String>,
+    #[serde(deserialize_with = "null_default")]
     pub installed: Vec<InstalledSearchDomain>,
+    #[serde(deserialize_with = "null_default")]
     pub waiting: Vec<WaitingSearchDomain>,
+    #[serde(deserialize_with = "null_default")]
     pub available: Vec<AvailableSearchDomain>,
     pub reconcile_error: String,
 }
@@ -270,10 +289,12 @@ pub struct WireGuardProfile {
     pub kind: String,
     pub public_key: String,
     pub listen_port: u16,
+    #[serde(deserialize_with = "null_default")]
     pub addresses: Vec<String>,
     pub dns_suffix: String,
     pub shields_up: bool,
     pub grant_count: i64,
+    #[serde(deserialize_with = "null_default")]
     pub peers: Vec<WireGuardPeer>,
 }
 
@@ -287,11 +308,23 @@ pub struct WireGuardPeer {
     pub last_handshake: String,
     pub receive_bytes: i64,
     pub transmit_bytes: i64,
+    #[serde(deserialize_with = "null_default")]
     pub canonical_addresses: Vec<String>,
+    #[serde(deserialize_with = "null_default")]
     pub effective_addresses: Vec<String>,
+    #[serde(deserialize_with = "null_default")]
     pub routes: Vec<String>,
     pub exit_node: bool,
     pub exit_node_selected: bool,
+}
+
+/// Go marshals a nil slice as `null`; the GUI reads that as an empty list.
+fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn capitalize(value: &str) -> String {
@@ -321,6 +354,17 @@ pub fn human_bytes(bytes: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_the_daemons_null_lists() {
+        let status: Status = serde_json::from_str(
+            r#"{"state":"up","profiles":null,"ipRoutes":{"bindings":null},"searchDomains":{"desired":null,"installed":null}}"#,
+        )
+        .expect("daemon state decodes");
+        assert!(status.profiles.is_empty());
+        assert!(status.search_domains.desired.is_empty());
+        assert!(status.ip_routes.bindings.is_empty());
+    }
 
     #[test]
     fn formats_byte_counts() {

@@ -1,6 +1,7 @@
 //! WireGuard and WARP profile authoring.
 
 use adw::prelude::*;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::app;
@@ -11,9 +12,7 @@ use crate::store::Shared;
 /// Applies a WireGuard configuration pasted into the form.
 pub fn add_wireguard(state: &Shared, parent: &impl IsA<gtk::Widget>) {
     let form = dialogs::form("Add WireGuard profile", "Apply", 520);
-    let list = dialogs::boxed_rows();
 
-    let name = adw::EntryRow::builder().title("Profile name").build();
     let config = gtk::TextView::builder()
         .monospace(true)
         .top_margin(8)
@@ -34,7 +33,6 @@ pub fn add_wireguard(state: &Shared, parent: &impl IsA<gtk::Widget>) {
         .css_classes(["dim-label"])
         .build();
 
-    list.append(&name);
     form.body.append(&config_label);
     form.body.append(&config_scroller);
 
@@ -46,17 +44,12 @@ pub fn add_wireguard(state: &Shared, parent: &impl IsA<gtk::Widget>) {
             state.toast("Paste a WireGuard configuration first");
             return false;
         }
-        let mut args = vec![
+        let args = vec![
             "wireguard".to_string(),
             "apply".into(),
             "--file".into(),
             "-".into(),
         ];
-        let name = name.text().trim().to_string();
-        if !name.is_empty() {
-            args.push("--name".into());
-            args.push(name);
-        }
         state.mutate(args, Some(text.to_string()));
         true
     });
@@ -77,10 +70,6 @@ pub fn register_warp(state: &Shared, parent: &impl IsA<gtk::Widget>) {
         .model(&gtk::StringList::new(&["QUIC", "HTTP/2"]))
         .build();
     transport.set_selected(0);
-    let dns = adw::SwitchRow::builder()
-        .title("Use WARP DNS")
-        .subtitle("Route DNS through the WARP profile")
-        .build();
     let tos = adw::SwitchRow::builder()
         .title("Accept the WARP terms of service")
         .build();
@@ -88,7 +77,6 @@ pub fn register_warp(state: &Shared, parent: &impl IsA<gtk::Widget>) {
     list.append(&name);
     list.append(&jwt);
     list.append(&transport);
-    list.append(&dns);
     list.append(&tos);
     form.body.append(&list);
 
@@ -118,9 +106,6 @@ pub fn register_warp(state: &Shared, parent: &impl IsA<gtk::Widget>) {
             }
             .into(),
         );
-        if dns.is_active() {
-            args.push("--dns".into());
-        }
         args.push("--accept-tos".into());
         let secret = if token.trim().is_empty() {
             None
@@ -161,16 +146,22 @@ pub fn detail(state: &Shared, name: &str) -> gtk::Widget {
         let peers_list = peers_list.clone();
         let shields = shields.clone();
         let loading = Rc::clone(&loading);
+        let fetching = Rc::new(Cell::new(false));
         move || {
+            if fetching.replace(true) {
+                return;
+            }
             let bridge = state.bridge.clone();
             let name = name.clone();
             let summary_list = summary_list.clone();
             let peers_list = peers_list.clone();
             let shields = shields.clone();
             let loading = Rc::clone(&loading);
+            let fetching = Rc::clone(&fetching);
             gtk::glib::spawn_future_local(async move {
                 let args = ["wireguard".to_string(), "show".into(), name.clone()];
                 let fetched = gtk::gio::spawn_blocking(move || bridge.read_cli(&args)).await;
+                fetching.set(false);
                 app::clear(&peers_list);
                 // The summary rows are rebuilt every poll; clear them or they pile up.
                 app::clear(&summary_list);
@@ -258,7 +249,7 @@ pub fn detail(state: &Shared, name: &str) -> gtk::Widget {
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&gtk::Label::new(Some(name))));
     let state = Rc::clone(state);
-    state.subscribe(refresh);
+    state.subscribe(&scroller, refresh);
     view.add_top_bar(&header);
     view.set_content(Some(&scroller));
     view.upcast()

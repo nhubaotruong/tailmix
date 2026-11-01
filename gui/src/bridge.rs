@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
 use gtk::glib;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -18,6 +18,8 @@ use serde::de::DeserializeOwned;
 
 const SOCKET_NAME: &str = "tailmixd.sock";
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Absolute, so a planted `pkexec` earlier on `$PATH` cannot answer instead.
+const PKEXEC: &str = "/usr/bin/pkexec";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
@@ -66,12 +68,12 @@ pub struct Bridge {
 
 impl Bridge {
     pub fn discover() -> Self {
-        let tailmix = glib::find_program_in_path("tailmix").or_else(|| {
-            ["/usr/local/bin/tailmix", "/usr/bin/tailmix"]
-                .iter()
-                .map(PathBuf::from)
-                .find(|path| path.exists())
-        });
+        // The same binary is run as root, so only a root-owned, unwritable copy
+        // is acceptable; anything else could be replaced by the desktop user.
+        let tailmix = std::iter::once(glib::find_program_in_path("tailmix"))
+            .flatten()
+            .chain(["/usr/local/bin/tailmix", "/usr/bin/tailmix"].map(PathBuf::from))
+            .find(|path| trusted(path));
         let socket_dir = std::env::var_os("TAILMIX_SOCKET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/var/run/tailmix"));
@@ -108,7 +110,9 @@ impl Bridge {
         })?;
         stream.set_read_timeout(Some(READ_TIMEOUT)).ok();
         stream.set_write_timeout(Some(READ_TIMEOUT)).ok();
-        let request = format!("GET {path} HTTP/1.1\r\nHost: tailmix\r\nConnection: close\r\n\r\n");
+        // HTTP/1.0 keeps the daemon from answering with chunked framing, which
+        // this minimal client does not want to reassemble.
+        let request = format!("GET {path} HTTP/1.0\r\nHost: tailmix\r\nConnection: close\r\n\r\n");
         stream.write_all(request.as_bytes()).map_err(|err| {
             Failure::new(
                 FailureKind::Unavailable,
@@ -132,10 +136,15 @@ impl Bridge {
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|code| code.parse::<u16>().ok())
             .unwrap_or(0);
+        let body = if head.lines().any(is_chunked) {
+            dechunk(body)
+        } else {
+            body.to_string()
+        };
         if status == 200 {
-            return Ok(body.to_string());
+            return Ok(body);
         }
-        let record: ErrorRecord = serde_json::from_str(body).unwrap_or_default();
+        let record: ErrorRecord = serde_json::from_str(&body).unwrap_or_default();
         Err(Failure::new(
             kind_for_status(status),
             if record.code.is_empty() {
@@ -157,7 +166,7 @@ impl Bridge {
             Failure::new(
                 FailureKind::Failed,
                 "internal",
-                "the tailmix command is not installed or not on PATH",
+                "tailmix is not installed by root; install it under /usr/local/bin or /usr/bin",
             )
         })
     }
@@ -165,7 +174,7 @@ impl Bridge {
     /// Starts the daemon unit. `tailmix up` needs a live daemon, so the
     /// recovery path goes through systemd instead.
     pub fn start_daemon(&self) -> Result<String, Failure> {
-        let output = Command::new("pkexec")
+        let output = Command::new(PKEXEC)
             .arg("--disable-internal-agent")
             .args(["systemctl", "start", "tailmixd"])
             .stdin(Stdio::null())
@@ -201,7 +210,7 @@ impl Bridge {
     /// `stdin` carries secrets; it is the only channel pkexec leaves open.
     pub fn mutate(&self, args: &[String], stdin: Option<&str>) -> Result<String, Failure> {
         let tailmix = self.command()?;
-        let mut command = Command::new("pkexec");
+        let mut command = Command::new(PKEXEC);
         command
             .arg("--disable-internal-agent")
             .arg(&tailmix)
@@ -312,11 +321,43 @@ fn last_line(text: &str) -> Option<&str> {
 }
 
 /// The trailing JSON error record a `--json` command writes to stderr.
+///
+/// The record is indented, so it spans lines; try each `{` from the end.
 fn error_record(stderr: &str) -> Option<ErrorRecord> {
-    stderr
-        .lines()
+    let text = stderr.trim_end();
+    text.match_indices('{')
         .rev()
-        .find_map(|line| serde_json::from_str(line.trim()).ok())
+        .find_map(|(index, _)| serde_json::from_str(&text[index..]).ok())
+}
+
+fn is_chunked(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("transfer-encoding:") && lower.contains("chunked")
+}
+
+/// Reassembles a chunked body without pulling in an HTTP client.
+fn dechunk(body: &str) -> String {
+    let mut rest = body;
+    let mut text = String::new();
+    while let Some((size_line, tail)) = rest.split_once("\r\n") {
+        let size = usize::from_str_radix(size_line.split(';').next().unwrap_or("").trim(), 16);
+        let Ok(size) = size else { break };
+        if size == 0 || tail.len() < size {
+            text.push_str(&tail[..tail.len().min(size)]);
+            break;
+        }
+        text.push_str(&tail[..size]);
+        rest = tail[size..].trim_start_matches("\r\n");
+    }
+    text
+}
+
+/// Root owns the binary and nobody else can write it.
+fn trusted(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.uid() == 0 && meta.mode() & 0o022 == 0)
+        .unwrap_or(false)
 }
 
 /// Maps a failed `pkexec tailmix … --json` run to the message the app shows.
