@@ -201,8 +201,12 @@ func TestWarpRegisterAcceptsTermsFlag(t *testing.T) {
 	if client.warpCalls != 1 {
 		t.Fatalf("apply calls = %d, want 1", client.warpCalls)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(stdout.String()), "{") {
-		t.Fatalf("stdout = %q, want JSON", stdout.String())
+	var profile controlapi.WarpProfile
+	if err := json.Unmarshal(stdout.Bytes(), &profile); err != nil {
+		t.Fatalf("stdout = %q: %v", stdout.String(), err)
+	}
+	if profile.Name != "cloudflare" || profile.Kind != "warp" {
+		t.Fatalf("profile = %+v", profile)
 	}
 	if strings.Contains(stderr.String(), "Terms of Service") {
 		t.Fatalf("stderr prompts for consent: %q", stderr.String())
@@ -226,5 +230,8 @@ func TestWarpRegisterConsentFailureIsMachineReadable(t *testing.T) {
 	}
 	if record.Code != "consent_required" {
 		t.Fatalf("code = %q, want consent_required", record.Code)
+	}
+	if client.warpCalls != 0 {
+		t.Fatalf("apply calls = %d, want 0", client.warpCalls)
 	}
 }

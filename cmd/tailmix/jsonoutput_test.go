@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
 	"strings"
 	"testing"
 
@@ -51,7 +49,7 @@ func TestJSONFailureEnvelopeReportsDaemonCode(t *testing.T) {
 }
 
 func TestJSONFailureEnvelopeMapsUnreachableDaemon(t *testing.T) {
-	client := &fakeManagementClient{statusErr: fmt.Errorf("connect to tailmix daemon: %w", net.ErrClosed)}
+	client := &fakeManagementClient{statusErr: unreachableDaemonError(t)}
 	code, _, stderr := runJSON(t, client, "", "status", "--json")
 	if code != 1 {
 		t.Errorf("exit = %d, want 1", code)
@@ -80,8 +78,8 @@ func TestJSONFailureEnvelopeIsAbsentWithoutJSON(t *testing.T) {
 	if code != 1 {
 		t.Errorf("exit = %d, want 1", code)
 	}
-	if strings.HasPrefix(strings.TrimSpace(stderr), "{") {
-		t.Errorf("stderr = %q, want plain text", stderr)
+	if stderr != "boom\n" {
+		t.Errorf("stderr = %q, want the plain error only", stderr)
 	}
 }
 
@@ -150,4 +148,20 @@ func TestProfilesRenameJSON(t *testing.T) {
 	if got.Name != "renamed" {
 		t.Errorf("profile = %+v", got)
 	}
+	if client.patchName != "work" {
+		t.Errorf("patched profile = %q, want work", client.patchName)
+	}
+	if client.patchRequest.Name == nil || *client.patchRequest.Name != "renamed" {
+		t.Errorf("patch request = %+v, want the new name", client.patchRequest)
+	}
+}
+
+// unreachableDaemonError is the error the CLI sees when no daemon listens.
+func unreachableDaemonError(t *testing.T) error {
+	t.Helper()
+	_, err := controlapi.NewClient(t.TempDir()).Status(context.Background())
+	if err == nil {
+		t.Fatal("expected an unreachable daemon")
+	}
+	return err
 }

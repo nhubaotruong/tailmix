@@ -47,6 +47,8 @@ type fakeManagementClient struct {
 	warpCalls        int
 	warpProfile      controlapi.WarpProfile
 	added            []controlapi.AddProfileRequest
+	patchName        string
+	patchRequest     controlapi.PatchProfileRequest
 }
 
 func (f *fakeManagementClient) Version(context.Context) (tailmixversion.Meta, error) {
@@ -80,7 +82,9 @@ func (f *fakeManagementClient) AddProfile(_ context.Context, request controlapi.
 	f.added = append(f.added, request)
 	return f.profile, nil
 }
-func (f *fakeManagementClient) PatchProfile(context.Context, string, controlapi.PatchProfileRequest) (controlapi.Profile, error) {
+func (f *fakeManagementClient) PatchProfile(_ context.Context, name string, request controlapi.PatchProfileRequest) (controlapi.Profile, error) {
+	f.patchName = name
+	f.patchRequest = request
 	return f.profile, nil
 }
 func (f *fakeManagementClient) ProfileAction(context.Context, string, string) (controlapi.Profile, error) {
