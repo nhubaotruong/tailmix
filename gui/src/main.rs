@@ -9,6 +9,8 @@ use adw::prelude::*;
 use gtk::glib;
 
 fn main() -> glib::ExitCode {
+    gtk::gio::resources_register_include!("tailmix-gui.gresource").expect("register resources");
+
     if running_as_root() {
         eprintln!(
             "tailmix-gui: run as your desktop user; the app asks for authorization per change."
