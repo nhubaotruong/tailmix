@@ -379,7 +379,7 @@ func (h *linuxHost) removeUnexpectedRules(installed []netlink.Rule, routes []Rou
 			continue
 		}
 		if err := h.ops.ruleDel(&installed[i]); err != nil && !isNotExist(err) {
-			return fmt.Errorf("remove stale Linux exit-node policy rule for family %d: %w", installed[i].Family, err)
+			return fmt.Errorf("remove stale Linux policy rule for family %d: %w", installed[i].Family, err)
 		}
 	}
 	return nil
@@ -568,7 +568,7 @@ func (h *linuxHost) Close() error {
 		}
 		for i := range state.rules {
 			if err := h.ops.ruleDel(&state.rules[i]); err != nil && !isNotExist(err) {
-				errs = append(errs, fmt.Errorf("remove Linux exit-node policy rule for family %d: %w", state.rules[i].Family, err))
+				errs = append(errs, fmt.Errorf("remove Linux policy rule for family %d: %w", state.rules[i].Family, err))
 			}
 		}
 		for _, route := range slices.Backward(state.tableRoutes) {
