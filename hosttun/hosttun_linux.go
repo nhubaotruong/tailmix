@@ -375,7 +375,7 @@ func (h *linuxHost) reconcileRouteTable(name string, table int, installed []linu
 func (h *linuxHost) removeUnexpectedRules(installed []netlink.Rule, routes []Route) error {
 	want := desiredLinuxRules(routes)
 	for i := range installed {
-		if containsLinuxRule(want, installed[i]) {
+		if containsLinuxRule(want, installed[i]) || !deletableLinuxRule(installed[i]) {
 			continue
 		}
 		if err := h.ops.ruleDel(&installed[i]); err != nil && !isNotExist(err) {
@@ -434,6 +434,18 @@ func sameLinuxRule(a, b netlink.Rule) bool {
 		a.SuppressPrefixlen == b.SuppressPrefixlen &&
 		a.Src == nil && b.Src == nil && a.Dst == nil && b.Dst == nil &&
 		a.IifName == "" && b.IifName == "" && a.OifName == "" && b.OifName == ""
+}
+
+// deletableLinuxRule reports whether a rule at a tailmix priority has the table
+// that priority owns, so a foreign rule at a colliding priority is left alone.
+func deletableLinuxRule(rule netlink.Rule) bool {
+	switch rule.Priority {
+	case tailmixMainRulePref:
+		return rule.Table == unix.RT_TABLE_MAIN
+	case tailmixExitRulePref:
+		return rule.Table == tailmixExitRouteTable
+	}
+	return false
 }
 
 func verifyLinuxState(wantAddrs []netip.Prefix, wantRoutes []Route, got linuxInstalledState) error {
@@ -567,6 +579,9 @@ func (h *linuxHost) Close() error {
 			state.rules = desiredLinuxRules(h.routes)
 		}
 		for i := range state.rules {
+			if !deletableLinuxRule(state.rules[i]) {
+				continue
+			}
 			if err := h.ops.ruleDel(&state.rules[i]); err != nil && !isNotExist(err) {
 				errs = append(errs, fmt.Errorf("remove Linux policy rule for family %d: %w", state.rules[i].Family, err))
 			}

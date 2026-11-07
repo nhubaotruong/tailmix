@@ -210,6 +210,23 @@ func TestLinuxExitRulesKeepLocalNetworkReachable(t *testing.T) {
 				family, mainRule.Priority, exitRule.Priority)
 		}
 	}
+	drifted := tailmixMainRule(unix.AF_INET)
+	drifted.SuppressPrefixlen = -1
+	if sameLinuxRule(tailmixMainRule(unix.AF_INET), drifted) {
+		t.Fatal("main rule without suppress_prefixlen must not compare equal")
+	}
+	if !deletableLinuxRule(drifted) {
+		t.Fatal("main rule at the reserved priority must remain deletable")
+	}
+	if deletableLinuxRule(netlink.Rule{Priority: tailmixMainRulePref, Table: 100}) {
+		t.Fatal("rule at a reserved priority in a foreign table must not be deletable")
+	}
+	if err := verifyLinuxState(nil, routes, linuxInstalledState{
+		rules:       desiredLinuxRules(routes),
+		tableRoutes: []linuxInstalledRoute{{Route: routes[0], controlled: true}},
+	}); err != nil {
+		t.Fatalf("verify full exit rule set: %v", err)
+	}
 }
 
 func TestLinuxRulesNeedAnExitRoute(t *testing.T) {
