@@ -170,6 +170,54 @@ func TestLinuxRouteOwnershipPriority(t *testing.T) {
 	}
 }
 
+func TestLinuxExitRulesKeepLocalNetworkReachable(t *testing.T) {
+	routes := []Route{{
+		Destination: netip.MustParsePrefix("0.0.0.0/1"),
+		Source:      netip.MustParseAddr("10.250.0.1"),
+		Exit:        true,
+	}}
+	rules := desiredLinuxRules(routes)
+	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
+		var mainRules []*netlink.Rule
+		var exitRule *netlink.Rule
+		for i := range rules {
+			if rules[i].Family != family {
+				continue
+			}
+			if rules[i].Priority == tailmixExitRulePref {
+				exitRule = &rules[i]
+				continue
+			}
+			mainRules = append(mainRules, &rules[i])
+		}
+		if len(mainRules) != 1 {
+			t.Fatalf("family %d: %d non-exit rules; want one main-table rule, else the local network enters the exit node", family, len(mainRules))
+		}
+		mainRule := mainRules[0]
+		if mainRule.Table != unix.RT_TABLE_MAIN || mainRule.SuppressPrefixlen != 0 {
+			t.Fatalf("family %d: main rule = table %d suppress %d; want table %d suppress 0",
+				family, mainRule.Table, mainRule.SuppressPrefixlen, unix.RT_TABLE_MAIN)
+		}
+		if mainRule.Mark >= 0 || mainRule.Invert {
+			t.Fatalf("family %d: main rule must match all traffic, got mark %d mask %d invert %t",
+				family, mainRule.Mark, mainRule.Mask, mainRule.Invert)
+		}
+		if exitRule == nil {
+			t.Fatalf("family %d: no exit-node rule", family)
+		}
+		if mainRule.Priority >= exitRule.Priority {
+			t.Fatalf("family %d: main rule priority %d must be lower than exit rule priority %d",
+				family, mainRule.Priority, exitRule.Priority)
+		}
+	}
+}
+
+func TestLinuxRulesNeedAnExitRoute(t *testing.T) {
+	if rules := desiredLinuxRules([]Route{{Destination: netip.MustParsePrefix("10.0.0.0/8")}}); len(rules) != 0 {
+		t.Fatalf("rules without an exit route = %d, want none", len(rules))
+	}
+}
+
 func TestLinuxAddressRouteFiltering(t *testing.T) {
 	local := netip.MustParsePrefix("fd6d:6e65:7400::/128")
 	locals := map[netip.Prefix]bool{local: true}

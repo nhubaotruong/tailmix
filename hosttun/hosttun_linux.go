@@ -22,6 +22,7 @@ import (
 
 const (
 	tailmixExitRouteTable = 527
+	tailmixMainRulePref   = 5290
 	tailmixExitRulePref   = 5300
 
 	// Linux normalizes an unspecified IPv6 route priority to 1024.
@@ -231,7 +232,7 @@ func (h *linuxHost) readInstalledState(wantRoutes []Route) (linuxInstalledState,
 			return linuxInstalledState{}, fmt.Errorf("list Linux policy rules for family %d: %w", family, err)
 		}
 		for _, rule := range rules {
-			if rule.Priority == tailmixExitRulePref {
+			if rule.Priority == tailmixMainRulePref || rule.Priority == tailmixExitRulePref {
 				if rule.Family == 0 {
 					rule.Family = family
 				}
@@ -399,7 +400,7 @@ func (h *linuxHost) addMissingRules(installed []netlink.Rule, routes []Route) er
 			for j := range added {
 				_ = h.ops.ruleDel(&added[j])
 			}
-			return fmt.Errorf("add Linux exit-node policy rule for family %d: %w", want[i].Family, err)
+			return fmt.Errorf("add Linux policy rule for family %d: %w", want[i].Family, err)
 		}
 		added = append(added, want[i])
 	}
@@ -410,7 +411,12 @@ func desiredLinuxRules(routes []Route) []netlink.Rule {
 	if !hasExitRoutes(routes) {
 		return nil
 	}
-	return []netlink.Rule{tailmixExitRule(unix.AF_INET), tailmixExitRule(unix.AF_INET6)}
+	return []netlink.Rule{
+		tailmixMainRule(unix.AF_INET),
+		tailmixExitRule(unix.AF_INET),
+		tailmixMainRule(unix.AF_INET6),
+		tailmixExitRule(unix.AF_INET6),
+	}
 }
 
 func containsLinuxRule(rules []netlink.Rule, want netlink.Rule) bool {
@@ -425,6 +431,7 @@ func containsLinuxRule(rules []netlink.Rule, want netlink.Rule) bool {
 func sameLinuxRule(a, b netlink.Rule) bool {
 	return a.Family == b.Family && a.Priority == b.Priority && a.Table == b.Table &&
 		a.Mark == b.Mark && a.Mask == b.Mask && a.Invert == b.Invert &&
+		a.SuppressPrefixlen == b.SuppressPrefixlen &&
 		a.Src == nil && b.Src == nil && a.Dst == nil && b.Dst == nil &&
 		a.IifName == "" && b.IifName == "" && a.OifName == "" && b.OifName == ""
 }
@@ -599,6 +606,19 @@ func hasExitRoutes(routes []Route) bool {
 		}
 	}
 	return false
+}
+
+// tailmixMainRule keeps specific main-table routes, such as the local network,
+// ahead of the exit-node default. Without it, non-bypassed traffic skips main,
+// so a LAN destination matches the split default in table 527 and enters the
+// tunnel.
+func tailmixMainRule(family int) netlink.Rule {
+	rule := *netlink.NewRule()
+	rule.Family = family
+	rule.Priority = tailmixMainRulePref
+	rule.Table = unix.RT_TABLE_MAIN
+	rule.SuppressPrefixlen = 0
+	return rule
 }
 
 func tailmixExitRule(family int) netlink.Rule {

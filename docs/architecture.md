@@ -472,7 +472,7 @@ Remote logtail upload is disabled by default. `-log-upload` opts in, and
 | Privileges | Root | Root or `CAP_NET_ADMIN` |
 | Profile LocalAPI | Unix sockets served by `ipnserver` | Unix sockets served by `ipnserver` |
 | Address and route application | `ifconfig` and `route` | Netlink |
-| Exit-node defaults | Split defaults plus a scoped physical `/0`; underlay sockets bind that interface | Split defaults in a dedicated policy table; marked underlay sockets bypass it |
+| Exit-node defaults | Split defaults plus a scoped physical `/0`; underlay sockets bind that interface | Split defaults in a dedicated policy table, after a main-table lookup rule so local routes keep precedence; marked underlay sockets skip the exit table |
 | DNS | Native split-DNS configurator | Upstream Linux configurator selection |
 | Cleanup | Routes and addresses removed before TUN close | Routes and addresses removed before TUN close |
 
