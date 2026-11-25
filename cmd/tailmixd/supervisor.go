@@ -46,6 +46,9 @@ type daemonConfig struct {
 	Version      string
 	UpdateRoot   string
 	UpdateDelay  func(bool) time.Duration
+	// Interfaces lists host interfaces to detect another connected
+	// Tailscale client. Nil disables the check.
+	Interfaces func() ([]interfaceAddrs, error)
 }
 
 type managedProfile struct {
