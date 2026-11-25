@@ -119,7 +119,6 @@ func (s *supervisor) ApplyWarp(_ context.Context, request controlapi.ApplyWarpRe
 	if create || beforeProfileRemoved(before, configured.ID) {
 		configured.Disabled = false
 	}
-	configured.Hostname = ""
 	configured.Warp = &config
 	configured, err = normalizeProfileByID(&next, profileID)
 	if err != nil {
