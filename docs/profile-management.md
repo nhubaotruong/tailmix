@@ -447,16 +447,21 @@ tailmix profiles list [--all] [--json]
 The human-readable output is stable enough for people, not scripts:
 
 ```text
-PROFILE  KIND       ENABLED  RUNTIME      BACKEND     DEFAULT  PEERS  LAST CONNECTED  TAILNET          ERROR
-home     tailscale  yes      running      Running     no       14     2h ago          home.ts.net
-edge     warp       yes      running      Connected   yes      0      4s ago
-lab      wireguard  no       disabled               no       3                       lab.example
-work     tailscale  yes      needs-login  NeedsLogin  no       0                                       work.ts.net
+PROFILE  NODE    TAILNET      KIND       STATUS       PEERS  BACKEND     DEFAULT  LAST CONNECTED
+home     laptop  home.ts.net  tailscale  running      14     Running     no       2h ago
+edge                           warp       running      0      Connected   yes      4s ago
+lab                           tailscale  disabled     0
+work                          tailscale  needs-login  0      NeedsLogin  no
 ```
+
+`NODE` is this machine's name in that profile's tailnet, as shown in the
+admin console. `STATUS` is the profile's `runtimeState`; a disabled profile
+shows `disabled`. For a profile in `error`, `profiles show` prints the last
+error. `tailmix status` starts with the same table.
 
 `KIND` is `tailscale`, `wireguard`, or `warp`. `BACKEND` is the state the
 profile's engine reports, so a WARP profile shows its tunnel state there. For a
-WARP profile without usable credentials, `RUNTIME` is `error` and `BACKEND` is
+WARP profile without usable credentials, `STATUS` is `error` and `BACKEND` is
 `NeedsReRegistration`. `DEFAULT` names the profile that holds the default
 route, which for a WARP profile means it is the selected exit node. `LAST CONNECTED` is the time since the profile's last successful
 connection, and stays empty when the kind does not report one. A WARP profile
