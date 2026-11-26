@@ -26,7 +26,7 @@ var (
 // selected engine, so the forwarder must accept it without error.
 func TestWarpEngineStartsProfileDNSForwarder(t *testing.T) {
 	engine := testWarpEngine(t)
-	forwarder, err := dns.StartProfileDNSForwarder(t.Context(), engine)
+	forwarder, err := dns.StartProfileDNSForwarder(t.Context(), engine, nil)
 	if err != nil {
 		t.Fatalf("start forwarder: %v", err)
 	}
