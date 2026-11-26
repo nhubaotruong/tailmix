@@ -783,8 +783,8 @@ func TestProfilesListShowsWarpConnectionAndDefault(t *testing.T) {
 		t.Fatalf("profiles list headers = %q", stdout.String())
 	}
 	row := profileRow(t, stdout.String(), "edge")
-	if row[1] != "warp" || row[2] != "yes" || row[3] != "running" || row[4] != "Running" ||
-		row[5] != "yes" || row[6] != "0" || strings.Join(row[7:9], " ") != "2m ago" {
+	if row[1] != "warp" || row[2] != "running" || row[3] != "0" || row[4] != "Running" ||
+		row[5] != "yes" || strings.Join(row[6:8], " ") != "2m ago" {
 		t.Fatalf("edge row = %q", row)
 	}
 }
@@ -805,8 +805,8 @@ func TestStatusShowsWarpConnectionAndEmptyPeers(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
 	}
 	row := profileRow(t, stdout.String(), "edge")
-	if row[1] != "warp" || row[3] != "running" || row[4] != "Running" || row[5] != "no" ||
-		row[6] != "0" || strings.Join(row[7:9], " ") != "3h ago" {
+	if row[1] != "warp" || row[2] != "running" || row[3] != "0" || row[4] != "Running" ||
+		row[5] != "no" || strings.Join(row[6:8], " ") != "3h ago" {
 		t.Fatalf("edge row = %q", row)
 	}
 }
